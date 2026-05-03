@@ -13,15 +13,18 @@ import (
 	rpsock "github.com/quyenhl16/udp-gtp-go/reuseport"
 )
 
-// Server owns the reuseport group, the eBPF module, and the packet read loops.
+// Server owns the transport sockets, the optional reuseport eBPF module,
+// and the packet read loops.
 type Server struct {
 	mu       sync.Mutex
 	cfg      appconfig.AppConfig
+	mode     Mode
 	handler  Handler
 	observer Observer
 
-	group  *rpsock.Group
-	module *rphook.Module
+	socketSet socketSet
+	group     *rpsock.Group
+	module    *rphook.Module
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -38,6 +41,9 @@ func New(cfg appconfig.AppConfig, handler Handler, observer Observer) (*Server, 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	if err := ValidateRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
 	if handler == nil {
 		return nil, ErrNilHandler
 	}
@@ -47,12 +53,13 @@ func New(cfg appconfig.AppConfig, handler Handler, observer Observer) (*Server, 
 
 	return &Server{
 		cfg:      cfg,
+		mode:     EffectiveMode(cfg),
 		handler:  handler,
 		observer: observer,
 	}, nil
 }
 
-// Start initializes all runtime resources and starts packet readers.
+// Start initializes runtime resources and starts packet readers.
 func (s *Server) Start(parent context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,56 +72,40 @@ func (s *Server) Start(parent context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	s.ctx, s.cancel = context.WithCancel(ctx)
 
-	group, err := rpsock.Open(BuildReuseportOptions(s.cfg))
+	set, group, err := openSocketSet(buildConfig{
+		udp:       BuildUDPOptions(s.cfg),
+		reuseport: BuildReuseportOptions(s.cfg),
+	}, s.mode)
 	if err != nil {
 		s.cancel()
-		return fmt.Errorf("open reuseport group: %w", err)
+		return fmt.Errorf("open socket set: %w", err)
 	}
 
-	module := rphook.New()
-	if err := module.Load(); err != nil {
-		_ = group.Close()
+	module, err := s.initEBPF(group)
+	if err != nil {
+		_ = set.Close()
 		s.cancel()
-		return fmt.Errorf("load reuseport module: %w", err)
+		return err
 	}
 
-	if err := module.UpdateConfig(BuildReuseportModuleConfig(s.cfg)); err != nil {
-		_ = module.Close()
-		_ = group.Close()
-		s.cancel()
-		return fmt.Errorf("update reuseport module config: %w", err)
-	}
-
-	if err := module.SyncSockArray(group); err != nil {
-		_ = module.Close()
-		_ = group.Close()
-		s.cancel()
-		return fmt.Errorf("sync reuseport sockarray: %w", err)
-	}
-
-	if err := module.Attach(group); err != nil {
-		_ = module.Close()
-		_ = group.Close()
-		s.cancel()
-		return fmt.Errorf("attach reuseport module: %w", err)
-	}
-
+	s.socketSet = set
 	s.group = group
 	s.module = module
 	s.started = true
 
 	s.startReadersLocked()
 
-	s.observer.OnStart(s.group.LocalAddr(), s.group.Len())
+	s.observer.OnStart(s.socketSet.LocalAddr(), s.socketSet.Len())
 
 	go s.watchContext()
 
 	return nil
 }
 
-// Close stops packet readers and releases all runtime resources.
+// Close stops packet readers and releases runtime resources.
 func (s *Server) Close() error {
 	s.mu.Lock()
 
@@ -128,8 +119,9 @@ func (s *Server) Close() error {
 	}
 
 	s.closed = true
+
 	cancel := s.cancel
-	group := s.group
+	socketSet := s.socketSet
 	module := s.module
 
 	s.mu.Unlock()
@@ -140,8 +132,8 @@ func (s *Server) Close() error {
 
 	var firstErr error
 
-	if group != nil {
-		if err := group.Close(); err != nil && firstErr == nil {
+	if socketSet != nil {
+		if err := socketSet.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -159,18 +151,27 @@ func (s *Server) Close() error {
 	return firstErr
 }
 
+// Mode returns the effective runtime mode.
+func (s *Server) Mode() Mode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.mode
+}
+
 // Addr returns the local address if the server has started.
 func (s *Server) Addr() net.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.group == nil {
+	if s.socketSet == nil {
 		return nil
 	}
-	return s.group.LocalAddr()
+
+	return s.socketSet.LocalAddr()
 }
 
-// ReuseportGroup returns the runtime socket group.
+// ReuseportGroup returns the reuseport group when reuseport mode is active.
 func (s *Server) ReuseportGroup() *rpsock.Group {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -178,12 +179,44 @@ func (s *Server) ReuseportGroup() *rpsock.Group {
 	return s.group
 }
 
-// ReuseportModule returns the runtime reuseport module.
+// ReuseportModule returns the reuseport eBPF module when enabled.
 func (s *Server) ReuseportModule() *rphook.Module {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.module
+}
+
+func (s *Server) initEBPF(group *rpsock.Group) (*rphook.Module, error) {
+	if !s.cfg.EBPF.Enabled {
+		return nil, nil
+	}
+	if s.mode != ModeReusePort || group == nil {
+		return nil, ErrReuseportEBPFRequiresReusePort
+	}
+
+	module := rphook.New()
+
+	if err := module.Load(); err != nil {
+		return nil, fmt.Errorf("load reuseport module: %w", err)
+	}
+
+	if err := module.UpdateConfig(BuildReuseportModuleConfig(s.cfg)); err != nil {
+		_ = module.Close()
+		return nil, fmt.Errorf("update reuseport module config: %w", err)
+	}
+
+	if err := module.SyncSockArray(group); err != nil {
+		_ = module.Close()
+		return nil, fmt.Errorf("sync reuseport sockarray: %w", err)
+	}
+
+	if err := module.Attach(group); err != nil {
+		_ = module.Close()
+		return nil, fmt.Errorf("attach reuseport module: %w", err)
+	}
+
+	return module, nil
 }
 
 func (s *Server) watchContext() {
@@ -192,7 +225,7 @@ func (s *Server) watchContext() {
 }
 
 func (s *Server) startReadersLocked() {
-	conns := s.group.Conns()
+	conns := s.socketSet.Conns()
 
 	for i, conn := range conns {
 		if conn == nil {
@@ -200,6 +233,7 @@ func (s *Server) startReadersLocked() {
 		}
 
 		s.wg.Add(1)
+
 		go func(index int, c *net.UDPConn) {
 			defer s.wg.Done()
 			s.readLoop(index, c)
@@ -215,6 +249,7 @@ func (s *Server) readLoop(index int, conn *net.UDPConn) {
 			if s.ctx.Err() != nil {
 				return
 			}
+
 			s.observer.OnReadError(index, err)
 			return
 		}
@@ -276,5 +311,6 @@ func (w *udpResponseWriter) Write(payload []byte, addr *net.UDPAddr) (int, error
 	if err != nil && w.obs != nil {
 		w.obs.OnWriteError(w.pkt, err)
 	}
+
 	return n, err
 }

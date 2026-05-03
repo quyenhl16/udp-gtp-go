@@ -2,12 +2,54 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	appconfig "github.com/quyenhl16/udp-gtp-go/config"
 	rphook "github.com/quyenhl16/udp-gtp-go/ebpf/hooks/reuseport"
 	rpsock "github.com/quyenhl16/udp-gtp-go/reuseport"
+	"github.com/quyenhl16/udp-gtp-go/udp"
 )
+
+// EffectiveMode derives the runtime mode from application config.
+func EffectiveMode(cfg appconfig.AppConfig) Mode {
+	if cfg.ReusePort.Enabled {
+		return ModeReusePort
+	}
+	return ModeSingle
+}
+
+// ValidateRuntimeConfig validates server runtime mode combinations.
+func ValidateRuntimeConfig(cfg appconfig.AppConfig) error {
+	mode := EffectiveMode(cfg)
+
+	switch mode {
+	case ModeSingle:
+		if cfg.EBPF.Enabled {
+			return ErrReuseportEBPFRequiresReusePort
+		}
+		return nil
+
+	case ModeReusePort:
+		return nil
+
+	default:
+		return fmt.Errorf("%w: %s", ErrUnknownMode, mode)
+	}
+}
+
+// BuildUDPOptions converts application config into plain UDP options.
+func BuildUDPOptions(cfg appconfig.AppConfig) udp.Options {
+	return udp.Options{
+		Network:          cfg.Listen.Network,
+		Host:             cfg.Listen.Host,
+		Port:             cfg.Listen.Port,
+		ReadBufferBytes:  cfg.ReusePort.RecvBufferBytes,
+		WriteBufferBytes: cfg.ReusePort.SendBufferBytes,
+		ReadTimeout:      cfg.Runtime.ReadTimeout,
+		WriteTimeout:     cfg.Runtime.WriteTimeout,
+	}
+}
 
 // BuildReuseportOptions converts application config into reuseport socket options.
 func BuildReuseportOptions(cfg appconfig.AppConfig) rpsock.Options {
