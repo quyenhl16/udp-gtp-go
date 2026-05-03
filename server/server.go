@@ -9,14 +9,16 @@ import (
 	"time"
 
 	appconfig "github.com/quyenhl16/udp-gtp-go/config"
+	"github.com/quyenhl16/udp-gtp-go/ebpf/core"
 	rphook "github.com/quyenhl16/udp-gtp-go/ebpf/hooks/reuseport"
 	rpsock "github.com/quyenhl16/udp-gtp-go/reuseport"
 )
 
-// Server owns the transport sockets, the optional reuseport eBPF module,
+// Server owns the transport sockets, the eBPF module registry,
 // and the packet read loops.
 type Server struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+
 	cfg      appconfig.AppConfig
 	mode     Mode
 	handler  Handler
@@ -24,7 +26,9 @@ type Server struct {
 
 	socketSet socketSet
 	group     *rpsock.Group
-	module    *rphook.Module
+
+	registry        *core.Registry
+	reuseportModule *rphook.Module
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -84,7 +88,7 @@ func (s *Server) Start(parent context.Context) error {
 		return fmt.Errorf("open socket set: %w", err)
 	}
 
-	module, err := s.initEBPF(group)
+	registry, reuseportModule, err := s.initModulesLocked(s.ctx, group)
 	if err != nil {
 		_ = set.Close()
 		s.cancel()
@@ -93,7 +97,8 @@ func (s *Server) Start(parent context.Context) error {
 
 	s.socketSet = set
 	s.group = group
-	s.module = module
+	s.registry = registry
+	s.reuseportModule = reuseportModule
 	s.started = true
 
 	s.startReadersLocked()
@@ -121,8 +126,8 @@ func (s *Server) Close() error {
 	s.closed = true
 
 	cancel := s.cancel
+	registry := s.registry
 	socketSet := s.socketSet
-	module := s.module
 
 	s.mu.Unlock()
 
@@ -132,6 +137,14 @@ func (s *Server) Close() error {
 
 	var firstErr error
 
+	// Close modules before transport sockets so module-specific detach logic
+	// can still access its runtime targets if needed.
+	if registry != nil {
+		if err := registry.CloseAll(context.Background()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	if socketSet != nil {
 		if err := socketSet.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -139,12 +152,6 @@ func (s *Server) Close() error {
 	}
 
 	s.wg.Wait()
-
-	if module != nil {
-		if err := module.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
 
 	s.observer.OnStop()
 
@@ -179,44 +186,88 @@ func (s *Server) ReuseportGroup() *rpsock.Group {
 	return s.group
 }
 
-// ReuseportModule returns the reuseport eBPF module when enabled.
+// ReuseportModule returns the registered reuseport module when available.
 func (s *Server) ReuseportModule() *rphook.Module {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.module
+	return s.reuseportModule
 }
 
-func (s *Server) initEBPF(group *rpsock.Group) (*rphook.Module, error) {
-	if !s.cfg.EBPF.Enabled {
-		return nil, nil
+// EnableModule enables a named eBPF module at runtime.
+func (s *Server) EnableModule(ctx context.Context, name string) error {
+	s.mu.Lock()
+	registry := s.registry
+	s.mu.Unlock()
+
+	if registry == nil {
+		return fmt.Errorf("module registry is nil")
 	}
-	if s.mode != ModeReusePort || group == nil {
-		return nil, ErrReuseportEBPFRequiresReusePort
+
+	return registry.Enable(ctx, name)
+}
+
+// DisableModule disables a named eBPF module at runtime.
+func (s *Server) DisableModule(ctx context.Context, name string) error {
+	s.mu.Lock()
+	registry := s.registry
+	s.mu.Unlock()
+
+	if registry == nil {
+		return fmt.Errorf("module registry is nil")
+	}
+
+	return registry.Disable(ctx, name)
+}
+
+// ModuleState returns the current lifecycle state of a named module.
+func (s *Server) ModuleState(name string) (core.State, error) {
+	s.mu.Lock()
+	registry := s.registry
+	s.mu.Unlock()
+
+	if registry == nil {
+		return "", fmt.Errorf("module registry is nil")
+	}
+
+	module, err := registry.Module(name)
+	if err != nil {
+		return "", err
+	}
+
+	return module.State(), nil
+}
+
+func (s *Server) initModulesLocked(ctx context.Context, group *rpsock.Group) (*core.Registry, *rphook.Module, error) {
+	registry := core.NewRegistry()
+
+	if s.mode != ModeReusePort {
+		return registry, nil, nil
 	}
 
 	module := rphook.New()
 
-	if err := module.Load(); err != nil {
-		return nil, fmt.Errorf("load reuseport module: %w", err)
+	if err := module.SetGroup(group); err != nil {
+		return nil, nil, fmt.Errorf("set reuseport module group: %w", err)
 	}
 
-	if err := module.UpdateConfig(BuildReuseportModuleConfig(s.cfg)); err != nil {
-		_ = module.Close()
-		return nil, fmt.Errorf("update reuseport module config: %w", err)
+	if err := module.SetConfig(BuildReuseportModuleConfig(s.cfg)); err != nil {
+		return nil, nil, fmt.Errorf("set reuseport module config: %w", err)
 	}
 
-	if err := module.SyncSockArray(group); err != nil {
-		_ = module.Close()
-		return nil, fmt.Errorf("sync reuseport sockarray: %w", err)
+	if err := registry.Register(module); err != nil {
+		return nil, nil, fmt.Errorf("register reuseport module: %w", err)
 	}
 
-	if err := module.Attach(group); err != nil {
-		_ = module.Close()
-		return nil, fmt.Errorf("attach reuseport module: %w", err)
+	// Register the module even when EBPF is initially disabled.
+	// This allows the server to enable it later at runtime.
+	if s.cfg.EBPF.Enabled {
+		if err := registry.Enable(ctx, module.Name()); err != nil {
+			return nil, nil, fmt.Errorf("enable reuseport module: %w", err)
+		}
 	}
 
-	return module, nil
+	return registry, module, nil
 }
 
 func (s *Server) watchContext() {

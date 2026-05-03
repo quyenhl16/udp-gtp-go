@@ -1,0 +1,22 @@
+{
+  "listen": {
+    "network": "udp",
+    "host": "0.0.0.0",
+    "port": 2123
+  },
+  "reuseport": {
+    "enabled": true,
+    "socket_count": 5,
+    "s11_weight": 4,
+    "s10_weight": 1,
+    "recv_buffer_bytes": 4194304,
+    "send_buffer_bytes": 4194304
+  },
+  "ebpf": {
+    "enabled": true,
+    "pin_path": "/sys/fs/bpf/udp-gtp-go",
+    "s11_message_type": 32,
+    "s10_message_type": 128,
+    "allow_kernel_fallback": true
+  }
+}
