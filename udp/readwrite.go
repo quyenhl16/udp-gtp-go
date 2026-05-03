@@ -1,70 +1,85 @@
 package udp
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"strconv"
+	"time"
 )
 
-// UDPConn is the concrete implementation of Conn.
-type UDPConn struct {
-	conn *net.UDPConn
-	opts Options
-}
-
-// Listen creates and binds a UDP socket using the provided options.
-func Listen(opts Options) (*UDPConn, error) {
-	opts.Normalize()
-
-	lc := net.ListenConfig{
-		Control: controlFunc(opts),
+// ReadPacket reads a single UDP packet into the provided buffer.
+func (c *UDPConn) ReadPacket(ctx context.Context, buf []byte) (Packet, error) {
+	if c == nil || c.conn == nil {
+		return Packet{}, ErrNilUDPConn
 	}
 
-	pc, err := lc.ListenPacket(
-		contextBackground(),
-		opts.Network,
-		joinHostPort(opts.Host, opts.Port),
-	)
+	if deadline, ok := contextDeadline(ctx, c.opts.ReadTimeout); ok {
+		if err := c.conn.SetReadDeadline(deadline); err != nil {
+			return Packet{}, fmt.Errorf("set read deadline: %w", err)
+		}
+	} else {
+		if err := c.conn.SetReadDeadline(time.Time{}); err != nil {
+			return Packet{}, fmt.Errorf("clear read deadline: %w", err)
+		}
+	}
+
+	n, addr, err := c.conn.ReadFrom(buf)
 	if err != nil {
-		return nil, fmt.Errorf("listen udp %s/%s:%d: %w", opts.Network, opts.Host, opts.Port, err)
+		return Packet{}, err
 	}
 
-	udpConn, ok := pc.(*net.UDPConn)
-	if !ok {
-		_ = pc.Close()
-		return nil, fmt.Errorf("listen packet returned non-UDP connection: %T", pc)
-	}
+	data := make([]byte, n)
+	copy(data, buf[:n])
 
-	if err := applyConnOptions(udpConn, opts); err != nil {
-		_ = udpConn.Close()
-		return nil, fmt.Errorf("apply udp options: %w", err)
-	}
-
-	return &UDPConn{
-		conn: udpConn,
-		opts: opts,
+	return Packet{
+		Data:       data,
+		RemoteAddr: addr,
+		LocalAddr:  c.conn.LocalAddr(),
+		ReceivedAt: time.Now(),
 	}, nil
 }
 
-// Close closes the UDP connection.
-func (c *UDPConn) Close() error {
+// WritePacket writes a UDP packet to the specified remote address.
+func (c *UDPConn) WritePacket(ctx context.Context, payload []byte, addr net.Addr) (int, error) {
 	if c == nil || c.conn == nil {
-		return nil
+		return 0, ErrNilUDPConn
 	}
-	return c.conn.Close()
+	if addr == nil {
+		return 0, ErrNilRemoteAddr
+	}
+
+	if deadline, ok := contextDeadline(ctx, c.opts.WriteTimeout); ok {
+		if err := c.conn.SetWriteDeadline(deadline); err != nil {
+			return 0, fmt.Errorf("set write deadline: %w", err)
+		}
+	} else {
+		if err := c.conn.SetWriteDeadline(time.Time{}); err != nil {
+			return 0, fmt.Errorf("clear write deadline: %w", err)
+		}
+	}
+
+	n, err := c.conn.WriteTo(payload, addr)
+	if err != nil {
+		return n, err
+	}
+	return n, nil
 }
 
-// LocalAddr returns the local bound address.
-func (c *UDPConn) LocalAddr() net.Addr {
-	if c == nil || c.conn == nil {
-		return nil
-	}
-	return c.conn.LocalAddr()
+func joinHostPort(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
-// RawConn returns the underlying net.UDPConn.
-func (c *UDPConn) RawConn() *net.UDPConn {
-	if c == nil {
-		return nil
+func contextDeadline(ctx context.Context, fallback time.Duration) (time.Time, bool) {
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			return deadline, true
+		}
 	}
-	return c.conn
+
+	if fallback > 0 {
+		return time.Now().Add(fallback), true
+	}
+
+	return time.Time{}, false
 }

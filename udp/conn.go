@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"context"
 	"fmt"
 	"net"
 )
@@ -20,7 +21,7 @@ func Listen(opts Options) (*UDPConn, error) {
 	}
 
 	pc, err := lc.ListenPacket(
-		contextBackground(),
+		context.Background(),
 		opts.Network,
 		joinHostPort(opts.Host, opts.Port),
 	)
