@@ -6,7 +6,6 @@ import (
 	"log"
 	"os/signal"
 	"syscall"
-	"time"
 
 	appconfig "github.com/quyenhl16/udp-gtp-go/config"
 	"github.com/quyenhl16/udp-gtp-go/server"

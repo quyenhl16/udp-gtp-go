@@ -9,7 +9,6 @@ import (
 	"time"
 
 	appconfig "github.com/quyenhl16/udp-gtp-go/config"
-	"github.com/quyenhl16/udp-gtp-go/ebpf/core"
 	rphook "github.com/quyenhl16/udp-gtp-go/ebpf/hooks/reuseport"
 	rpsock "github.com/quyenhl16/udp-gtp-go/reuseport"
 )
