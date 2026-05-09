@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	appconfig "github.com/quyenhl16/udp-gtp-go/config"
+	"github.com/quyenhl16/udp-gtp-go/metrics"
 	"github.com/quyenhl16/udp-gtp-go/server"
 )
 
@@ -20,10 +21,16 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
+	metricsObserver := metrics.NewObserver()
+	observer := server.NewMultiObserver(
+		server.PacketLogger(log.Printf),
+		metricsObserver,
+	)
+
 	srv, err := server.New(
 		cfg,
 		server.OKHandler(),
-		server.PacketLogger(log.Printf),
+		observer,
 	)
 	if err != nil {
 		log.Fatalf("create server: %v", err)
@@ -40,6 +47,33 @@ func main() {
 
 	if err := srv.Close(); err != nil {
 		log.Printf("close server: %v", err)
+	}
+
+	snap := metricsObserver.Snapshot()
+
+	log.Printf("packets_total=%d bytes_total=%d", snap.PacketsTotal, snap.BytesTotal)
+	log.Printf(
+		"read_errors=%d handle_errors=%d write_errors=%d",
+		snap.ReadErrorsTotal,
+		snap.HandleErrorsTotal,
+		snap.WriteErrorsTotal,
+	)
+
+	for _, socketIndex := range metrics.SortedSocketKeys(snap) {
+		log.Printf(
+			"socket[%d]: packets=%d bytes=%d",
+			socketIndex,
+			snap.PacketsBySocket[socketIndex],
+			snap.BytesBySocket[socketIndex],
+		)
+	}
+
+	for _, msgType := range metrics.SortedMessageTypeKeys(snap) {
+		log.Printf(
+			"messageType[%d]: packets=%d",
+			msgType,
+			snap.PacketsByMessageType[msgType],
+		)
 	}
 
 	log.Printf("demo exited")
