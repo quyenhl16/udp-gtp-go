@@ -7,7 +7,7 @@ The current implementation is oriented around **GTPv2-C** traffic and demonstrat
 - **S11 pool**: 4 sockets
 - **S10 pool**: 1 socket
 
-The project is designed with an extensible architecture so that additional eBPF programs, hooks, and packet processing modules can be added later without redesigning the core.
+The repository is designed as a reusable foundation rather than a one-off demo. The eBPF runtime is intentionally separated from the built-in UDP server so that other Go projects can import and reuse the eBPF module with their own socket-group implementation.
 
 ---
 
@@ -15,32 +15,50 @@ The project is designed with an extensible architecture so that additional eBPF 
 
 This project aims to provide:
 
-- A reusable **Go UDP server foundation**
-- A reusable **Linux `SO_REUSEPORT` socket group**
-- A modular **eBPF runtime framework**
-- A clean pattern for **hook-specific eBPF modules**
-- A practical example of **GTPv2-C-aware traffic steering**
-- A codebase that can evolve into a reusable third-party library
+- a reusable **Go UDP server foundation**
+- a reusable **Linux `SO_REUSEPORT` socket group**
+- a modular **eBPF runtime framework**
+- a clean pattern for **hook-specific eBPF modules**
+- a practical example of **GTPv2-C-aware traffic steering**
+- a codebase that can evolve into a reusable third-party library
 
 ---
 
 ## Key ideas
 
 ### 1. Single IP:Port, multiple UDP sockets
+
 The server opens multiple UDP sockets bound to the same IP:Port using `SO_REUSEPORT`.
 
 ### 2. eBPF-based socket selection
+
 Instead of relying only on the kernel default reuseport hashing, an eBPF `SK_REUSEPORT` program reads packet metadata and selects a socket from a target pool.
 
 ### 3. Traffic classification by GTPv2-C message type
+
 For the current demo, packets are classified by **GTPv2-C message type** and mapped into:
 
 - **S11 socket pool**
 - **S10 socket pool**
 - optional fallback behavior
 
-### 4. Extensible eBPF architecture
-The repository is intentionally structured so that future eBPF programs can be added easily, for example:
+### 4. Reusable eBPF integration model
+
+The eBPF runtime is designed to be reusable outside the built-in UDP server.
+
+The `ebpf/hooks/reuseport` module does not depend on the server package and does not require the repository's `reuseport.Group` type directly.
+
+Instead, it depends on a small socket-group abstraction defined under `ebpf/contracts`.
+
+This allows:
+
+- the built-in server to use the module with `reuseport.Group`
+- other Go projects to import the same eBPF module and provide their own socket-group implementation
+- the eBPF layer to remain reusable and independent from higher-level server orchestration
+
+### 5. Extensible architecture
+
+The repository is intentionally structured so that future eBPF programs can be added without redesigning the current runtime model, for example:
 
 - additional `SK_REUSEPORT` selectors
 - XDP programs
@@ -50,7 +68,7 @@ The repository is intentionally structured so that future eBPF programs can be a
 
 ---
 
-# Repository structure
+## Repository structure
 
 ```text
 .
@@ -93,6 +111,9 @@ The repository is intentionally structured so that future eBPF programs can be a
 │   │   ├── collection.go
 │   │   └── registry.go
 │   │
+│   ├── contracts/
+│   │   └── socket_group.go
+│   │
 │   ├── maps/
 │   │   ├── doc.go
 │   │   ├── array.go
@@ -113,8 +134,37 @@ The repository is intentionally structured so that future eBPF programs can be a
 │           ├── reuseport_bpfel.go
 │           └── reuseport_bpfeb.go
 │
+├── server/
+│   ├── doc.go
+│   ├── types.go
+│   ├── errors.go
+│   ├── options.go
+│   └── server.go
+│
+├── cmd/
+│   └── demo/
+│       └── main.go
+│
 ├── tools/
 │   └── tools.go
 │
 ├── go.mod
 └── README.md
+
+# Generate eBPF bindings after changing files under bpf/
+go generate ./...
+
+# Build all packages
+go build ./...
+
+# Build the demo binary
+go build -o bin/demo ./cmd/demo
+
+# Run tests
+go test ./...
+
+# Run the demo directly without building a binary first
+sudo go run ./cmd/demo
+
+# Run the demo directly with a config file
+sudo go run ./cmd/demo -config ./config.json
