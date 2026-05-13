@@ -13,10 +13,15 @@ import (
 
 // EffectiveMode derives the runtime mode from application config.
 func EffectiveMode(cfg appconfig.AppConfig) Mode {
+	if cfg.ReusePort.Enabled && cfg.EBPF.Enabled {
+		return ModeReusePortEBPF
+	}
+
 	if cfg.ReusePort.Enabled {
 		return ModeReusePort
 	}
-	return ModeSingle
+
+	return ModeNormal
 }
 
 // ValidateRuntimeConfig validates server runtime mode combinations.
@@ -24,13 +29,13 @@ func ValidateRuntimeConfig(cfg appconfig.AppConfig) error {
 	mode := EffectiveMode(cfg)
 
 	switch mode {
-	case ModeSingle:
+	case ModeNormal:
 		if cfg.EBPF.Enabled {
 			return ErrReuseportEBPFRequiresReusePort
 		}
 		return nil
 
-	case ModeReusePort:
+	case ModeReusePort, ModeReusePortEBPF:
 		return nil
 
 	default:

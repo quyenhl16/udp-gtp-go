@@ -119,10 +119,10 @@ func (s *reuseportSocketSet) Group() *rpsock.Group {
 
 func openSocketSet(cfg any, mode Mode) (socketSet, *rpsock.Group, error) {
 	switch mode {
-	case ModeSingle:
+	case ModeNormal:
 		appCfg, ok := cfg.(buildConfig)
 		if !ok {
-			return nil, nil, fmt.Errorf("invalid single socket config")
+			return nil, nil, fmt.Errorf("invalid normal socket config")
 		}
 
 		set, err := openSingleSocketSet(appCfg.udp)
@@ -132,7 +132,7 @@ func openSocketSet(cfg any, mode Mode) (socketSet, *rpsock.Group, error) {
 
 		return set, nil, nil
 
-	case ModeReusePort:
+	case ModeReusePort, ModeReusePortEBPF:
 		appCfg, ok := cfg.(buildConfig)
 		if !ok {
 			return nil, nil, fmt.Errorf("invalid reuseport socket config")
