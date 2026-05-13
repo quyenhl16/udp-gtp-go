@@ -151,6 +151,11 @@ The repository is intentionally structured so that future eBPF programs can be a
 ├── go.mod
 └── README.md
 
+```
+
+## Development commands
+
+```bash
 # Generate eBPF bindings after changing files under bpf/
 go generate ./...
 
@@ -168,3 +173,11 @@ sudo go run ./cmd/demo
 
 # Run the demo directly with a config file
 sudo go run ./cmd/demo -config ./config.json
+
+# Run the benchmark client
+go run ./cmd/bench \
+  -addr 127.0.0.1:2123 \
+  -mode request_response \
+  -workers 8 \
+  -duration 10s
+```
