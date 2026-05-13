@@ -180,4 +180,18 @@ go run ./cmd/bench \
   -mode request_response \
   -workers 8 \
   -duration 10s
+
+# Build the benchmark scenarios binary
+go build -o bin/bench-scenarios ./cmd/bench-scenarios
+
+# Run the three benchmark scenarios
+sudo ./bin/bench-scenarios \
+  -base-port 21230 \
+  -workers 8 \
+  -duration 10s \
+  -bench-mode request_response \
+  -s11-msg-type 32 \
+  -s10-msg-type 128 \
+  -s11-weight 4 \
+  -s10-weight 1
 ```
