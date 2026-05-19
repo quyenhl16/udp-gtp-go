@@ -147,7 +147,7 @@ func (o Options) Validate() error {
 	}
 
 	if o.SingleFlow && o.Mode != ModeFireAndForget {
-	return fmt.Errorf("single_flow is currently supported only in fire_and_forget mode")
+		return fmt.Errorf("single_flow is currently supported only in fire_and_forget mode")
 	}
 
 	return nil

@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-var sequenceCounter atomic.Uint64
-
 type workerResult struct {
 	sentPackets     uint64
 	receivedPackets uint64
@@ -27,16 +25,6 @@ type workerResult struct {
 func Run(ctx context.Context, opts Options) (Result, error) {
 	opts.Normalize()
 
-	var sharedConn *net.UDPConn
-
-	if opts.SingleFlow {
-		sharedConn, err = net.DialUDP("udp", nil, target)
-		if err != nil {
-			return Result{}, fmt.Errorf("dial shared udp connection: %w", err)
-		}
-		defer sharedConn.Close()
-	}
-
 	if err := opts.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -44,6 +32,15 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	target, err := net.ResolveUDPAddr("udp", opts.TargetAddr)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve target address %q: %w", opts.TargetAddr, err)
+	}
+
+	var sharedConn *net.UDPConn
+	if opts.SingleFlow {
+		sharedConn, err = net.DialUDP("udp", nil, target)
+		if err != nil {
+			return Result{}, fmt.Errorf("dial shared udp connection: %w", err)
+		}
+		defer sharedConn.Close()
 	}
 
 	runCtx := ctx
@@ -62,12 +59,13 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	results := make(chan workerResult, opts.Workers)
 	var wg sync.WaitGroup
 	var sentCounter atomic.Uint64
+	var sequenceCounter atomic.Uint64
 
 	for i := 0; i < opts.Workers; i++ {
 		wg.Add(1)
 		go func(workerIndex int) {
-		defer wg.Done()
-		results <- runWorker(runCtx, workerIndex, target, opts, &sentCounter, &sequenceCounter, sharedConn)
+			defer wg.Done()
+			results <- runWorker(runCtx, workerIndex, target, opts, &sentCounter, &sequenceCounter, sharedConn)
 		}(i)
 	}
 
