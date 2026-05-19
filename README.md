@@ -184,6 +184,9 @@ go run ./cmd/bench \
 # Build the benchmark scenarios binary
 go build -o bin/bench-scenarios ./cmd/bench-scenarios
 
+# Build the hot-flow benchmark binary
+go build -o bin/bench-hotflow ./cmd/bench-hotflow
+
 # Run the three benchmark scenarios
 sudo ./bin/bench-scenarios \
   -base-port 21230 \
@@ -194,4 +197,18 @@ sudo ./bin/bench-scenarios \
   -s10-msg-type 128 \
   -s11-weight 4 \
   -s10-weight 1
+
+# Run the single hot-flow benchmark
+sudo ./bin/bench-hotflow \
+  -base-port 21300 \
+  -workers 8 \
+  -duration 10s \
+  -s11-msg-type 32 \
+  -s10-msg-type 128 \
+  -s11-weight 100 \
+  -s10-weight 0 \
+  -s11-pool-weight 4 \
+  -s10-pool-weight 1 \
+  -heavy-delay 200us \
+  -drain 2s
 ```
