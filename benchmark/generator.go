@@ -19,15 +19,24 @@ func newTrafficPicker(classes []TrafficClass, seed int64) (*trafficPicker, error
 	}
 
 	total := 0
+	active := make([]TrafficClass, 0, len(classes))
 	for _, tc := range classes {
-		if tc.Weight <= 0 {
+		if tc.Weight < 0 {
 			return nil, fmt.Errorf("invalid traffic weight for messageType=%d", tc.MessageType)
 		}
+		if tc.Weight == 0 {
+			continue
+		}
 		total += tc.Weight
+		active = append(active, tc)
+	}
+
+	if total <= 0 {
+		return nil, fmt.Errorf("traffic total weight must be > 0")
 	}
 
 	return &trafficPicker{
-		classes: classes,
+		classes: active,
 		total:   total,
 		rng:     rand.New(rand.NewSource(seed)),
 	}, nil

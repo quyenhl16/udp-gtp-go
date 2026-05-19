@@ -136,8 +136,8 @@ func (o Options) Validate() error {
 
 	totalWeight := 0
 	for i, tc := range o.Traffic {
-		if tc.Weight <= 0 {
-			return fmt.Errorf("traffic[%d].weight must be > 0: got %d", i, tc.Weight)
+		if tc.Weight < 0 {
+			return fmt.Errorf("traffic[%d].weight must be >= 0: got %d", i, tc.Weight)
 		}
 		totalWeight += tc.Weight
 	}
