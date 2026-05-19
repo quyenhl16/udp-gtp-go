@@ -1,9 +1,18 @@
 package reuseport
 
+const (
+	// SelectionModeFlowHash selects sockets using the kernel flow hash.
+	SelectionModeFlowHash uint8 = 0
+
+	// SelectionModeGTPSequence selects sockets using the GTPv2-C sequence number.
+	SelectionModeGTPSequence uint8 = 1
+)
+
 // Config defines the runtime configuration pushed into the reuseport config map.
 type Config struct {
 	S11MessageType      uint8
 	S10MessageType      uint8
+	SelectionMode       uint8
 	S11PoolBase         uint32
 	S11PoolSize         uint32
 	S10PoolBase         uint32
@@ -18,7 +27,7 @@ type bpfConfig struct {
 	S11MessageType      uint8
 	S10MessageType      uint8
 	AllowKernelFallback uint8
-	_                   uint8
+	SelectionMode       uint8
 
 	S11PoolBase      uint32
 	S11PoolSize      uint32

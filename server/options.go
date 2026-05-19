@@ -73,6 +73,7 @@ func BuildReuseportModuleConfig(cfg appconfig.AppConfig) rphook.Config {
 	return rphook.Config{
 		S11MessageType:      cfg.EBPF.S11MessageType,
 		S10MessageType:      cfg.EBPF.S10MessageType,
+		SelectionMode:       cfg.EBPF.SelectionMode,
 		S11PoolBase:         0,
 		S11PoolSize:         uint32(cfg.ReusePort.S11Weight),
 		S10PoolBase:         uint32(cfg.ReusePort.S11Weight),

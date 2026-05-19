@@ -40,11 +40,11 @@ type EBPFConfig struct {
 	Enabled bool   `json:"enabled"`
 	PinPath string `json:"pin_path"`
 
-	// MessageType giả lập dùng để classify.
 	S11MessageType uint8 `json:"s11_message_type"`
 	S10MessageType uint8 `json:"s10_message_type"`
 
-	// Cho phép fallback về kernel hashing nếu selector không chọn được.
+	SelectionMode uint8 `json:"selection_mode"`
+
 	AllowKernelFallback bool `json:"allow_kernel_fallback"`
 }
 

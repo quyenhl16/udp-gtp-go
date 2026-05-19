@@ -7,11 +7,15 @@
 
 #include "../common/common.h"
 
+#define SELECTION_MODE_FLOW_HASH 0
+#define SELECTION_MODE_GTP_SEQUENCE 1
+#define GTPV2_FLAG_TEID 0x08
+
 struct reuseport_config {
     __u8 s11_message_type;
     __u8 s10_message_type;
     __u8 allow_kernel_fallback;
-    __u8 pad0;
+    __u8 selection_mode;
 
     __u32 s11_pool_base;
     __u32 s11_pool_size;
@@ -19,6 +23,11 @@ struct reuseport_config {
     __u32 s10_pool_size;
     __u32 fallback_pool_base;
     __u32 fallback_pool_size;
+};
+
+struct packet_meta {
+    __u8 message_type;
+    __u32 sequence;
 };
 
 struct gtpv2c_header_min {
@@ -76,14 +85,16 @@ pool_is_valid(const struct pool_range *pool)
  * The GTPv2-C header begins immediately after struct udphdr.
  */
 static __always_inline int
-parse_gtpv2_message_type(struct sk_reuseport_md *ctx, __u8 *message_type)
+parse_gtpv2_meta(struct sk_reuseport_md *ctx, struct packet_meta *meta)
 {
     void *data;
     void *data_end;
     struct udphdr *udp;
-    struct gtpv2c_header_min *gtp;
+    __u8 *gtp;
+    __u8 flags;
+    __u32 seq_offset;
 
-    if (!ctx || !message_type)
+    if (!ctx || !meta)
         return -1;
 
     if (!udp_gtp_go_is_udp(ctx))
@@ -97,11 +108,42 @@ parse_gtpv2_message_type(struct sk_reuseport_md *ctx, __u8 *message_type)
         return -1;
 
     gtp = (void *)(udp + 1);
-    if (!udp_gtp_go_ptr_in_range(gtp, data_end, sizeof(*gtp)))
+
+    if (!udp_gtp_go_ptr_in_range(gtp, data_end, 8))
         return -1;
 
-    *message_type = gtp->message_type;
+    flags = gtp[0];
+
+    meta->message_type = gtp[1];
+
+    if (flags & GTPV2_FLAG_TEID) {
+        if (!udp_gtp_go_ptr_in_range(gtp, data_end, 12))
+            return -1;
+
+        seq_offset = 8;
+    } else {
+        seq_offset = 4;
+    }
+
+    meta->sequence = ((__u32)gtp[seq_offset] << 16) |
+                     ((__u32)gtp[seq_offset + 1] << 8) |
+                     ((__u32)gtp[seq_offset + 2]);
+
     return 0;
+}
+
+static __always_inline __u32
+selection_seed(const struct reuseport_config *cfg,
+               const struct packet_meta *meta,
+               struct sk_reuseport_md *ctx)
+{
+    if (!cfg || !meta || !ctx)
+        return 0;
+
+    if (cfg->selection_mode == SELECTION_MODE_GTP_SEQUENCE && meta->sequence != 0)
+        return meta->sequence;
+
+    return ctx->hash;
 }
 
 /*
@@ -137,14 +179,15 @@ classify_pool(const struct reuseport_config *cfg, __u8 message_type)
  */
 static __always_inline int
 try_select_socket_from_pool(struct sk_reuseport_md *ctx,
-                            const struct pool_range *pool)
+                            const struct pool_range *pool,
+                            __u32 seed)
 {
     __u32 key;
 
     if (!ctx || !pool_is_valid(pool))
         return -1;
 
-    key = pool->base + udp_gtp_go_hash_mod(ctx->hash, pool->size);
+    key = pool->base + udp_gtp_go_hash_mod(seed, pool->size);
 
     return bpf_sk_select_reuseport(ctx, &sock_map, &key, 0);
 }
@@ -165,23 +208,26 @@ SEC("sk_reuseport")
 int select_reuseport(struct sk_reuseport_md *ctx)
 {
     const struct reuseport_config *cfg;
+    struct packet_meta meta = {};
     struct pool_range pool;
-    __u8 message_type = 0;
+    __u32 seed;
     int ret;
 
     cfg = load_config();
     if (!cfg)
         return SK_PASS;
 
-    ret = parse_gtpv2_message_type(ctx, &message_type);
+    ret = parse_gtpv2_meta(ctx, &meta);
     if (ret < 0)
         return fallback_verdict(cfg);
 
-    pool = classify_pool(cfg, message_type);
+    pool = classify_pool(cfg, meta.message_type);
     if (!pool_is_valid(&pool))
         return fallback_verdict(cfg);
 
-    ret = try_select_socket_from_pool(ctx, &pool);
+    seed = selection_seed(cfg, &meta, ctx);
+
+    ret = try_select_socket_from_pool(ctx, &pool, seed);
     if (ret == 0)
         return SK_PASS;
 

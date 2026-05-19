@@ -67,13 +67,14 @@ func (m *Module) UpdateConfig(cfg Config) error {
 		S11MessageType:      cfg.S11MessageType,
 		S10MessageType:      cfg.S10MessageType,
 		AllowKernelFallback: boolToUint8(cfg.AllowKernelFallback),
+		SelectionMode:       cfg.SelectionMode,
 		S11PoolBase:         cfg.S11PoolBase,
 		S11PoolSize:         cfg.S11PoolSize,
 		S10PoolBase:         cfg.S10PoolBase,
 		S10PoolSize:         cfg.S10PoolSize,
 		FallbackPoolBase:    cfg.FallbackPoolBase,
 		FallbackPoolSize:    cfg.FallbackPoolSize,
-	}
+}
 
 	return ebpfmaps.UpdateArrayValue(m.bundle.ConfigMap, key, &value)
 }

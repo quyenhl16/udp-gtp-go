@@ -38,6 +38,10 @@ type Options struct {
 	// BaseTEID and BaseSequence are used to generate synthetic GTPv2-C packets.
 	BaseTEID     uint32
 	BaseSequence uint32
+
+	// SingleFlow forces all benchmark workers to share one UDP socket.
+	// This is useful for testing reuseport behavior under one hot source flow.
+	SingleFlow bool
 }
 
 // DefaultOptions returns a sensible benchmark configuration.
@@ -140,6 +144,10 @@ func (o Options) Validate() error {
 
 	if totalWeight <= 0 {
 		return fmt.Errorf("traffic total weight must be > 0")
+	}
+
+	if o.SingleFlow && o.Mode != ModeFireAndForget {
+	return fmt.Errorf("single_flow is currently supported only in fire_and_forget mode")
 	}
 
 	return nil

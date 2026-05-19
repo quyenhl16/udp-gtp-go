@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var sequenceCounter atomic.Uint64
+
 type workerResult struct {
 	sentPackets     uint64
 	receivedPackets uint64
@@ -24,6 +26,16 @@ type workerResult struct {
 // Run executes a UDP benchmark against the configured target.
 func Run(ctx context.Context, opts Options) (Result, error) {
 	opts.Normalize()
+
+	var sharedConn *net.UDPConn
+
+	if opts.SingleFlow {
+		sharedConn, err = net.DialUDP("udp", nil, target)
+		if err != nil {
+			return Result{}, fmt.Errorf("dial shared udp connection: %w", err)
+		}
+		defer sharedConn.Close()
+	}
 
 	if err := opts.Validate(); err != nil {
 		return Result{}, err
@@ -54,8 +66,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	for i := 0; i < opts.Workers; i++ {
 		wg.Add(1)
 		go func(workerIndex int) {
-			defer wg.Done()
-			results <- runWorker(runCtx, workerIndex, target, opts, &sentCounter)
+		defer wg.Done()
+		results <- runWorker(runCtx, workerIndex, target, opts, &sentCounter, &sequenceCounter, sharedConn)
 		}(i)
 	}
 
@@ -103,20 +115,30 @@ func runWorker(
 	target *net.UDPAddr,
 	opts Options,
 	sentCounter *atomic.Uint64,
+	sequenceCounter *atomic.Uint64,
+	sharedConn *net.UDPConn,
 ) workerResult {
-	conn, err := net.DialUDP("udp", nil, target)
-	if err != nil {
-		return workerResult{
-			writeErrors: 1,
+	var conn *net.UDPConn
+	var err error
+	ownConn := false
+
+	if sharedConn != nil {
+		conn = sharedConn
+	} else {
+		conn, err = net.DialUDP("udp", nil, target)
+		if err != nil {
+			return workerResult{writeErrors: 1}
 		}
+		ownConn = true
 	}
-	defer conn.Close()
+
+	if ownConn {
+		defer conn.Close()
+	}
 
 	picker, err := newTrafficPicker(opts.Traffic, defaultSeed(workerIndex))
 	if err != nil {
-		return workerResult{
-			writeErrors: 1,
-		}
+		return workerResult{writeErrors: 1}
 	}
 
 	var out workerResult
@@ -127,6 +149,8 @@ func runWorker(
 			return out
 		}
 
+		packetID := sequenceCounter.Add(1)
+
 		if opts.TotalPackets > 0 {
 			n := sentCounter.Add(1)
 			if n > opts.TotalPackets {
@@ -135,10 +159,11 @@ func runWorker(
 		}
 
 		tc := picker.Next()
+
 		packet := BuildGTPv2Message(
 			tc.MessageType,
-			opts.BaseTEID+uint32(workerIndex),
-			opts.BaseSequence+uint32(out.sentPackets),
+			opts.BaseTEID,
+			opts.BaseSequence+uint32(packetID),
 			opts.PayloadSize,
 		)
 
@@ -149,6 +174,7 @@ func runWorker(
 		}
 
 		start := time.Now()
+
 		n, err := conn.Write(packet)
 		if err != nil {
 			out.writeErrors++
