@@ -160,7 +160,7 @@ func runWorker(
 
 		packet := BuildGTPv2Message(
 			tc.MessageType,
-			opts.BaseTEID,
+			nextTEID(opts.BaseTEID, opts.TEIDCount, packetID),
 			opts.BaseSequence+uint32(packetID),
 			opts.PayloadSize,
 		)
@@ -215,4 +215,12 @@ func runWorker(
 		out.receivedBytes += uint64(n)
 		out.latencies = append(out.latencies, time.Since(start))
 	}
+}
+
+func nextTEID(base uint32, count uint32, packetID uint64) uint32 {
+	if count <= 1 {
+		return base
+	}
+
+	return base + uint32((packetID-1)%uint64(count))
 }

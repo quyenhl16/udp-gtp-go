@@ -9,6 +9,7 @@
 
 #define SELECTION_MODE_FLOW_HASH 0
 #define SELECTION_MODE_GTP_SEQUENCE 1
+#define SELECTION_MODE_GTP_TEID 2
 #define GTPV2_FLAG_TEID 0x08
 
 struct reuseport_config {
@@ -27,6 +28,7 @@ struct reuseport_config {
 
 struct packet_meta {
     __u8 message_type;
+    __u32 teid;
     __u32 sequence;
 };
 
@@ -120,8 +122,13 @@ parse_gtpv2_meta(struct sk_reuseport_md *ctx, struct packet_meta *meta)
         if (!udp_gtp_go_ptr_in_range(gtp, data_end, 12))
             return -1;
 
+        meta->teid = ((__u32)gtp[4] << 24) |
+                     ((__u32)gtp[5] << 16) |
+                     ((__u32)gtp[6] << 8) |
+                     ((__u32)gtp[7]);
         seq_offset = 8;
     } else {
+        meta->teid = 0;
         seq_offset = 4;
     }
 
@@ -142,6 +149,9 @@ selection_seed(const struct reuseport_config *cfg,
 
     if (cfg->selection_mode == SELECTION_MODE_GTP_SEQUENCE && meta->sequence != 0)
         return meta->sequence;
+
+    if (cfg->selection_mode == SELECTION_MODE_GTP_TEID && meta->teid != 0)
+        return meta->teid;
 
     return ctx->hash;
 }

@@ -87,6 +87,9 @@ func applyEnv(cfg *AppConfig) {
 	if v, ok := getenvUint8(EnvPrefix + "EBPF_S10_MESSAGE_TYPE"); ok {
 		cfg.EBPF.S10MessageType = v
 	}
+	if v, ok := getenvUint8(EnvPrefix + "EBPF_SELECTION_MODE"); ok {
+		cfg.EBPF.SelectionMode = v
+	}
 	if v, ok := getenvBool(EnvPrefix + "EBPF_ALLOW_KERNEL_FALLBACK"); ok {
 		cfg.EBPF.AllowKernelFallback = v
 	}

@@ -6,6 +6,9 @@ const (
 
 	// SelectionModeGTPSequence selects sockets using the GTPv2-C sequence number.
 	SelectionModeGTPSequence uint8 = 1
+
+	// SelectionModeGTPTEID selects sockets using the GTPv2-C TEID.
+	SelectionModeGTPTEID uint8 = 2
 )
 
 // Config defines the runtime configuration pushed into the reuseport config map.

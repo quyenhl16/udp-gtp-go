@@ -31,8 +31,9 @@ func main() {
 		s11Weight = flag.Int("s11-weight", 4, "Traffic weight for S11")
 		s10Weight = flag.Int("s10-weight", 1, "Traffic weight for S10")
 
-		baseTEID = flag.Uint("base-teid", 1, "Base TEID used for synthetic GTPv2-C packets")
-		baseSeq  = flag.Uint("base-seq", 1, "Base sequence number used for synthetic GTPv2-C packets")
+		baseTEID  = flag.Uint("base-teid", 1, "Base TEID used for synthetic GTPv2-C packets")
+		teidCount = flag.Uint("teid-count", 1, "Number of sequential TEIDs to cycle through")
+		baseSeq   = flag.Uint("base-seq", 1, "Base sequence number used for synthetic GTPv2-C packets")
 	)
 
 	flag.Parse()
@@ -50,6 +51,7 @@ func main() {
 		ReadTimeout:  *readTimeout,
 		WriteTimeout: *writeTimeout,
 		BaseTEID:     uint32(*baseTEID),
+		TEIDCount:    uint32(*teidCount),
 		BaseSequence: uint32(*baseSeq),
 		Traffic: []benchmark.TrafficClass{
 			{

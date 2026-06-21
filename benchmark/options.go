@@ -37,6 +37,7 @@ type Options struct {
 
 	// BaseTEID and BaseSequence are used to generate synthetic GTPv2-C packets.
 	BaseTEID     uint32
+	TEIDCount    uint32
 	BaseSequence uint32
 
 	// SingleFlow forces all benchmark workers to share one UDP socket.
@@ -67,6 +68,7 @@ func DefaultOptions() Options {
 			},
 		},
 		BaseTEID:     1,
+		TEIDCount:    1,
 		BaseSequence: 1,
 	}
 }
@@ -101,6 +103,9 @@ func (o *Options) Normalize() {
 	}
 	if o.BaseTEID == 0 {
 		o.BaseTEID = def.BaseTEID
+	}
+	if o.TEIDCount == 0 {
+		o.TEIDCount = def.TEIDCount
 	}
 	if o.BaseSequence == 0 {
 		o.BaseSequence = def.BaseSequence

@@ -27,11 +27,8 @@ func (c *AppConfig) Normalize() {
 		c.ReusePort.SocketCount = 5
 	}
 
-	if c.ReusePort.S11Weight == 0 {
+	if c.ReusePort.S11Weight == 0 && c.ReusePort.S10Weight == 0 {
 		c.ReusePort.S11Weight = 4
-	}
-
-	if c.ReusePort.S10Weight == 0 {
 		c.ReusePort.S10Weight = 1
 	}
 
@@ -69,14 +66,17 @@ func (c AppConfig) Validate() error {
 		if c.ReusePort.SocketCount <= 0 {
 			errs = append(errs, fmt.Errorf("reuseport.socket_count must be > 0: got %d", c.ReusePort.SocketCount))
 		}
-		if c.ReusePort.S11Weight <= 0 {
-			errs = append(errs, fmt.Errorf("reuseport.s11_weight must be > 0: got %d", c.ReusePort.S11Weight))
+		if c.ReusePort.S11Weight < 0 {
+			errs = append(errs, fmt.Errorf("reuseport.s11_weight must be >= 0: got %d", c.ReusePort.S11Weight))
 		}
-		if c.ReusePort.S10Weight <= 0 {
-			errs = append(errs, fmt.Errorf("reuseport.s10_weight must be > 0: got %d", c.ReusePort.S10Weight))
+		if c.ReusePort.S10Weight < 0 {
+			errs = append(errs, fmt.Errorf("reuseport.s10_weight must be >= 0: got %d", c.ReusePort.S10Weight))
 		}
 
 		expected := c.ReusePort.S11Weight + c.ReusePort.S10Weight
+		if expected <= 0 {
+			errs = append(errs, fmt.Errorf("reuseport.s11_weight + reuseport.s10_weight must be > 0"))
+		}
 		if c.ReusePort.SocketCount != expected {
 			errs = append(errs, fmt.Errorf(
 				"reuseport.socket_count must equal s11_weight + s10_weight: got socket_count=%d, expected=%d",
