@@ -31,6 +31,7 @@ type scenarioResult struct {
 	Mode     server.Mode
 	Client   benchmark.Result
 	Server   metrics.Snapshot
+	CPU      benchmark.ProcessCPUMetrics
 	Duration time.Duration
 }
 
@@ -239,16 +240,16 @@ func runScenario(
 	}
 
 	clientOpts := benchmark.Options{
-		TargetAddr:    fmt.Sprintf("%s:%d", targetHost, port),
-		Workers:       workers,
-		Duration:      duration,
-		TotalPackets:  totalPackets,
-		Mode:          benchmark.ModeFireAndForget,
-		PayloadSize:   payloadSize,
-		WriteTimeout:  writeTimeout,
-		SingleFlow:    true,
-		BaseTEID:      1,
-		BaseSequence:  1,
+		TargetAddr:   fmt.Sprintf("%s:%d", targetHost, port),
+		Workers:      workers,
+		Duration:     duration,
+		TotalPackets: totalPackets,
+		Mode:         benchmark.ModeFireAndForget,
+		PayloadSize:  payloadSize,
+		WriteTimeout: writeTimeout,
+		SingleFlow:   true,
+		BaseTEID:     1,
+		BaseSequence: 1,
 		Traffic: []benchmark.TrafficClass{
 			{
 				Name:        "S11",
@@ -263,9 +264,17 @@ func runScenario(
 		},
 	}
 
+	cpuStart, cpuStartErr := benchmark.SampleProcessCPU()
+
 	clientResult, err := benchmark.Run(ctx, clientOpts)
 	if err != nil {
 		return scenarioResult{}, fmt.Errorf("run client benchmark: %w", err)
+	}
+
+	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
+	cpuMetrics := benchmark.ProcessCPUMetrics{}
+	if cpuStartErr == nil && cpuEndErr == nil {
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, clientResult.PacketsPerSecond)
 	}
 
 	if drain > 0 {
@@ -283,6 +292,7 @@ func runScenario(
 		Mode:     sc.Mode,
 		Client:   clientResult,
 		Server:   serverSnapshot,
+		CPU:      cpuMetrics,
 		Duration: duration,
 	}, nil
 }
@@ -292,25 +302,29 @@ func printComparison(results []scenarioResult) {
 	fmt.Println("Single hot flow + heavy handler benchmark")
 	fmt.Println("=========================================")
 	fmt.Printf(
-		"%-26s %-20s %14s %14s %14s %14s %14s\n",
+		"%-26s %-20s %14s %14s %14s %14s %14s %14s %14s\n",
 		"scenario",
 		"mode",
 		"client_sent",
 		"server_recv",
 		"server_bytes",
 		"client_pps",
+		"avg_cpu_%",
+		"cpu_per_kpps",
 		"write_errors",
 	)
 
 	for _, item := range results {
 		fmt.Printf(
-			"%-26s %-20s %14d %14d %14d %14.2f %14d\n",
+			"%-26s %-20s %14d %14d %14d %14.2f %14s %14s %14d\n",
 			item.Name,
 			item.Mode,
 			item.Client.SentPackets,
 			item.Server.PacketsTotal,
 			item.Server.BytesTotal,
 			item.Client.PacketsPerSecond,
+			benchmark.FormatCPUPercent(item.CPU),
+			benchmark.FormatCPUPerKpps(item.CPU),
 			item.Client.WriteErrors,
 		)
 	}

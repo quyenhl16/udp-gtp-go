@@ -34,6 +34,7 @@ type scenarioResult struct {
 	Mode     server.Mode
 	Client   benchmark.Result
 	Server   metrics.Snapshot
+	CPU      benchmark.ProcessCPUMetrics
 	Affinity affinitySnapshot
 }
 
@@ -280,6 +281,8 @@ func runScenario(
 		}
 	}
 
+	cpuStart, cpuStartErr := benchmark.SampleProcessCPU()
+
 	clientResult, err := benchmark.Run(ctx, benchmark.Options{
 		TargetAddr:   fmt.Sprintf("%s:%d", targetHost, port),
 		Workers:      workers,
@@ -304,6 +307,12 @@ func runScenario(
 		return scenarioResult{}, fmt.Errorf("run client benchmark: %w", err)
 	}
 
+	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
+	cpuMetrics := benchmark.ProcessCPUMetrics{}
+	if cpuStartErr == nil && cpuEndErr == nil {
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, clientResult.PacketsPerSecond)
+	}
+
 	if drain > 0 {
 		select {
 		case <-ctx.Done():
@@ -317,6 +326,7 @@ func runScenario(
 		Mode:     sc.Mode,
 		Client:   clientResult,
 		Server:   metricsObserver.Snapshot(),
+		CPU:      cpuMetrics,
 		Affinity: affinityObserver.Snapshot(sampleLimit),
 	}, nil
 }
@@ -326,24 +336,28 @@ func printComparison(results []scenarioResult) {
 	fmt.Println("TEID-aware worker distribution benchmark")
 	fmt.Println("========================================")
 	fmt.Printf(
-		"%-24s %-20s %14s %14s %14s %14s %14s\n",
+		"%-24s %-20s %14s %14s %14s %14s %14s %14s %14s\n",
 		"scenario",
 		"mode",
 		"client_sent",
 		"server_recv",
 		"client_pps",
+		"avg_cpu_%",
+		"cpu_per_kpps",
 		"teids_seen",
 		"affinity_viol",
 	)
 
 	for _, item := range results {
 		fmt.Printf(
-			"%-24s %-20s %14d %14d %14.2f %14d %14d\n",
+			"%-24s %-20s %14d %14d %14.2f %14s %14s %14d %14d\n",
 			item.Name,
 			item.Mode,
 			item.Client.SentPackets,
 			item.Server.PacketsTotal,
 			item.Client.PacketsPerSecond,
+			benchmark.FormatCPUPercent(item.CPU),
+			benchmark.FormatCPUPerKpps(item.CPU),
 			item.Affinity.TEIDCount,
 			item.Affinity.Violations,
 		)

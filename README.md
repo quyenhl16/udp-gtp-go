@@ -187,6 +187,9 @@ go build -o bin/bench-scenarios ./cmd/bench-scenarios
 # Build the hot-flow benchmark binary
 go build -o bin/bench-hotflow ./cmd/bench-hotflow
 
+# Build the TEID distribution benchmark binary
+go build -o bin/bench-teid-distribution ./cmd/bench-teid-distribution
+
 # Run the three benchmark scenarios
 sudo ./bin/bench-scenarios \
   -base-port 21230 \
@@ -210,5 +213,16 @@ sudo ./bin/bench-hotflow \
   -s11-pool-weight 4 \
   -s10-pool-weight 1 \
   -heavy-delay 200us \
+  -drain 2s
+
+# Run the TEID distribution benchmark
+sudo ./bin/bench-teid-distribution \
+  -base-port 21400 \
+  -workers 8 \
+  -sockets 8 \
+  -duration 10s \
+  -base-teid 1 \
+  -teid-count 1024 \
+  -sample-teids 16 \
   -drain 2s
 ```
