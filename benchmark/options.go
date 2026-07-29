@@ -43,6 +43,11 @@ type Options struct {
 	// SingleFlow forces all benchmark workers to share one UDP socket.
 	// This is useful for testing reuseport behavior under one hot source flow.
 	SingleFlow bool
+
+	// TrackServerLatency reserves eight bytes after the GTPv2-C header for the
+	// client send timestamp. A matching metrics end-to-end observer uses it to
+	// measure send-to-handler-completion latency in fire-and-forget benchmarks.
+	TrackServerLatency bool
 }
 
 // DefaultOptions returns a sensible benchmark configuration.

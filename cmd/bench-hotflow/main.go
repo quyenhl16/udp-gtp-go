@@ -205,7 +205,7 @@ func runScenario(
 	cfg.EBPF.SelectionMode = rphook.SelectionModeGTPSequence
 	cfg.EBPF.AllowKernelFallback = true
 
-	metricsObserver := metrics.NewObserver()
+	metricsObserver := metrics.NewEndToEndObserver()
 
 	srv, err := server.NewWithMode(
 		cfg,
@@ -240,16 +240,17 @@ func runScenario(
 	}
 
 	clientOpts := benchmark.Options{
-		TargetAddr:   fmt.Sprintf("%s:%d", targetHost, port),
-		Workers:      workers,
-		Duration:     duration,
-		TotalPackets: totalPackets,
-		Mode:         benchmark.ModeFireAndForget,
-		PayloadSize:  payloadSize,
-		WriteTimeout: writeTimeout,
-		SingleFlow:   true,
-		BaseTEID:     1,
-		BaseSequence: 1,
+		TargetAddr:         fmt.Sprintf("%s:%d", targetHost, port),
+		Workers:            workers,
+		Duration:           duration,
+		TotalPackets:       totalPackets,
+		Mode:               benchmark.ModeFireAndForget,
+		PayloadSize:        payloadSize,
+		WriteTimeout:       writeTimeout,
+		SingleFlow:         true,
+		BaseTEID:           1,
+		BaseSequence:       1,
+		TrackServerLatency: true,
 		Traffic: []benchmark.TrafficClass{
 			{
 				Name:        "S11",
@@ -271,12 +272,6 @@ func runScenario(
 		return scenarioResult{}, fmt.Errorf("run client benchmark: %w", err)
 	}
 
-	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
-	cpuMetrics := benchmark.ProcessCPUMetrics{}
-	if cpuStartErr == nil && cpuEndErr == nil {
-		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, clientResult.PacketsPerSecond)
-	}
-
 	if drain > 0 {
 		select {
 		case <-ctx.Done():
@@ -286,6 +281,13 @@ func runScenario(
 	}
 
 	serverSnapshot := metricsObserver.Snapshot()
+	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
+	cpuMetrics := benchmark.ProcessCPUMetrics{}
+	if cpuStartErr == nil && cpuEndErr == nil {
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, 0)
+		processedPPS := benchmark.PacketsPerSecond(serverSnapshot.ProcessedPacketsTotal, cpuMetrics.WallDuration)
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, processedPPS)
+	}
 
 	return scenarioResult{
 		Name:     sc.Name,
@@ -302,30 +304,45 @@ func printComparison(results []scenarioResult) {
 	fmt.Println("Single hot flow + heavy handler benchmark")
 	fmt.Println("=========================================")
 	fmt.Printf(
-		"%-26s %-20s %14s %14s %14s %14s %14s %14s %14s\n",
-		"scenario",
+		"%-26s %14s %14s %14s %15s %11s %12s %12s %12s %16s %12s %14s %14s %20s\n",
 		"mode",
 		"client_sent",
 		"server_recv",
-		"server_bytes",
-		"client_pps",
+		"processed",
+		"processed_kpps",
+		"delivery_%",
+		"p50",
+		"p95",
+		"p99",
+		"drop/overflow",
+		"write_errs",
+		"affinity_viol",
 		"avg_cpu_%",
-		"cpu_per_kpps",
-		"write_errors",
+		"cpu/processed_kpps",
 	)
 
 	for _, item := range results {
+		duration := item.CPU.WallDuration
+		if duration <= 0 {
+			duration = item.Client.Duration
+		}
+		latency := item.Server.ProcessingLatency
 		fmt.Printf(
-			"%-26s %-20s %14d %14d %14d %14.2f %14s %14s %14d\n",
+			"%-26s %14d %14d %14d %15.2f %11.2f %12s %12s %12s %16s %12d %14s %14s %20s\n",
 			item.Name,
-			item.Mode,
 			item.Client.SentPackets,
 			item.Server.PacketsTotal,
-			item.Server.BytesTotal,
-			item.Client.PacketsPerSecond,
+			item.Server.ProcessedPacketsTotal,
+			benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration)/1000,
+			benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal),
+			benchmark.FormatLatency(latency.Count, latency.P50),
+			benchmark.FormatLatency(latency.Count, latency.P95),
+			benchmark.FormatLatency(latency.Count, latency.P99),
+			fmt.Sprintf("%d/%d", benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal), item.Server.ReceiveOverflowTotal),
+			item.Client.WriteErrors+item.Server.WriteErrorsTotal,
+			"n/a",
 			benchmark.FormatCPUPercent(item.CPU),
-			benchmark.FormatCPUPerKpps(item.CPU),
-			item.Client.WriteErrors,
+			benchmark.FormatCPUPerProcessedKpps(item.CPU),
 		)
 	}
 

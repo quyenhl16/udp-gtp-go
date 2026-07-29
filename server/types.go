@@ -44,6 +44,19 @@ type Observer interface {
 	OnWriteError(pkt Packet, err error)
 }
 
+// PacketProcessedObserver is an optional observer extension notified after a
+// packet handler completes successfully.
+type PacketProcessedObserver interface {
+	OnPacketProcessed(pkt Packet)
+}
+
+// ReceiveOverflowObserver is an optional observer extension notified when the
+// Linux socket reports packets dropped because its receive queue overflowed.
+// dropped is the delta since the previous notification for that socket.
+type ReceiveOverflowObserver interface {
+	OnReceiveOverflow(socketIndex int, dropped uint64)
+}
+
 // NopObserver is the default no-op runtime observer.
 type NopObserver struct{}
 
@@ -55,6 +68,12 @@ func (NopObserver) OnStop() {}
 
 // OnPacketReceived implements Observer.
 func (NopObserver) OnPacketReceived(pkt Packet) {}
+
+// OnPacketProcessed implements PacketProcessedObserver.
+func (NopObserver) OnPacketProcessed(pkt Packet) {}
+
+// OnReceiveOverflow implements ReceiveOverflowObserver.
+func (NopObserver) OnReceiveOverflow(socketIndex int, dropped uint64) {}
 
 // OnReadError implements Observer.
 func (NopObserver) OnReadError(socketIndex int, err error) {}

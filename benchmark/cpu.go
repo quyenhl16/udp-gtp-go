@@ -22,11 +22,15 @@ type ProcessCPUMetrics struct {
 	WallDuration              time.Duration
 	CPUTime                   time.Duration
 	AverageUtilizationPercent float64
-	CPUPerKpps                float64
+	CPUPerProcessedKpps       float64
+	// CPUPerKpps is kept for compatibility and has the same value as
+	// CPUPerProcessedKpps.
+	CPUPerKpps float64
 }
 
-// ProcessCPUUsage calculates average CPU utilization between two snapshots.
-func ProcessCPUUsage(start ProcessCPUSnapshot, end ProcessCPUSnapshot, packetsPerSecond float64) ProcessCPUMetrics {
+// ProcessCPUUsage calculates average CPU utilization and normalizes it by
+// successfully processed server throughput.
+func ProcessCPUUsage(start ProcessCPUSnapshot, end ProcessCPUSnapshot, processedPacketsPerSecond float64) ProcessCPUMetrics {
 	wallDuration := end.wallTime.Sub(start.wallTime)
 	cpuTime := end.cpuTime - start.cpuTime
 	if wallDuration <= 0 || cpuTime < 0 {
@@ -35,8 +39,8 @@ func ProcessCPUUsage(start ProcessCPUSnapshot, end ProcessCPUSnapshot, packetsPe
 
 	avgCPU := cpuTime.Seconds() / wallDuration.Seconds() * 100
 	cpuPerKpps := math.NaN()
-	if packetsPerSecond > 0 {
-		cpuPerKpps = avgCPU / (packetsPerSecond / 1000)
+	if processedPacketsPerSecond > 0 {
+		cpuPerKpps = avgCPU / (processedPacketsPerSecond / 1000)
 	}
 
 	return ProcessCPUMetrics{
@@ -44,6 +48,7 @@ func ProcessCPUUsage(start ProcessCPUSnapshot, end ProcessCPUSnapshot, packetsPe
 		WallDuration:              wallDuration,
 		CPUTime:                   cpuTime,
 		AverageUtilizationPercent: avgCPU,
+		CPUPerProcessedKpps:       cpuPerKpps,
 		CPUPerKpps:                cpuPerKpps,
 	}
 }
@@ -57,11 +62,18 @@ func FormatCPUPercent(m ProcessCPUMetrics) string {
 	return fmt.Sprintf("%.2f", m.AverageUtilizationPercent)
 }
 
-// FormatCPUPerKpps formats CPU percentage points spent per 1,000 packets/s.
-func FormatCPUPerKpps(m ProcessCPUMetrics) string {
-	if !m.Available || math.IsNaN(m.CPUPerKpps) {
+// FormatCPUPerProcessedKpps formats CPU percentage points spent per 1,000
+// successfully processed packets/s.
+func FormatCPUPerProcessedKpps(m ProcessCPUMetrics) string {
+	if !m.Available || math.IsNaN(m.CPUPerProcessedKpps) {
 		return "n/a"
 	}
 
-	return fmt.Sprintf("%.4f", m.CPUPerKpps)
+	return fmt.Sprintf("%.4f", m.CPUPerProcessedKpps)
+}
+
+// FormatCPUPerKpps is kept for compatibility. New benchmark reports should
+// use FormatCPUPerProcessedKpps to make the denominator explicit.
+func FormatCPUPerKpps(m ProcessCPUMetrics) string {
+	return FormatCPUPerProcessedKpps(m)
 }

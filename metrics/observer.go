@@ -1,7 +1,9 @@
 package metrics
 
 import (
+	"encoding/binary"
 	"net"
+	"time"
 
 	"github.com/quyenhl16/udp-gtp-go/gtpv2"
 	"github.com/quyenhl16/udp-gtp-go/server"
@@ -9,7 +11,18 @@ import (
 
 // Observer collects in-memory counters from server runtime events.
 type Observer struct {
-	counters *Counters
+	counters             *Counters
+	trackEndToEndLatency bool
+}
+
+// NewEndToEndObserver creates an observer that reads the send timestamp
+// embedded by benchmark.Options.TrackServerLatency. This measures latency from
+// immediately before the client write through successful handler completion.
+func NewEndToEndObserver() *Observer {
+	return &Observer{
+		counters:             NewCounters(),
+		trackEndToEndLatency: true,
+	}
 }
 
 // NewObserver creates a metrics observer with its own counter set.
@@ -99,4 +112,35 @@ func (o *Observer) OnWriteError(pkt server.Packet, err error) {
 	}
 
 	o.counters.IncWriteErrors(1)
+}
+
+// OnPacketProcessed implements server.PacketProcessedObserver.
+func (o *Observer) OnPacketProcessed(pkt server.Packet) {
+	if o == nil || o.counters == nil {
+		return
+	}
+
+	o.counters.IncProcessedPackets(1)
+	startedAt := pkt.ReceivedAt
+	if o.trackEndToEndLatency {
+		if header, err := gtpv2.DecodeHeader(pkt.Data); err == nil {
+			offset := header.HeaderLength()
+			if len(pkt.Data) >= offset+8 {
+				nanoseconds := int64(binary.BigEndian.Uint64(pkt.Data[offset : offset+8]))
+				if nanoseconds > 0 {
+					startedAt = time.Unix(0, nanoseconds)
+				}
+			}
+		}
+	}
+	o.counters.ObserveProcessingLatency(time.Since(startedAt))
+}
+
+// OnReceiveOverflow implements server.ReceiveOverflowObserver.
+func (o *Observer) OnReceiveOverflow(socketIndex int, dropped uint64) {
+	if o == nil || o.counters == nil {
+		return
+	}
+
+	o.counters.IncReceiveOverflow(dropped)
 }

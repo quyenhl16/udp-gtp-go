@@ -4,16 +4,21 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Counters stores runtime counters in memory using atomic primitives.
 type Counters struct {
-	packetsTotal atomic.Uint64
-	bytesTotal   atomic.Uint64
+	packetsTotal          atomic.Uint64
+	processedPacketsTotal atomic.Uint64
+	bytesTotal            atomic.Uint64
 
-	readErrorsTotal   atomic.Uint64
-	handleErrorsTotal atomic.Uint64
-	writeErrorsTotal  atomic.Uint64
+	readErrorsTotal      atomic.Uint64
+	handleErrorsTotal    atomic.Uint64
+	writeErrorsTotal     atomic.Uint64
+	receiveOverflowTotal atomic.Uint64
+
+	processingLatency latencyHistogram
 
 	packetsBySocket sync.Map // map[int]*atomic.Uint64
 	bytesBySocket   sync.Map // map[int]*atomic.Uint64
@@ -29,6 +34,11 @@ func NewCounters() *Counters {
 // IncPackets increments the total packet counter.
 func (c *Counters) IncPackets(n uint64) {
 	c.packetsTotal.Add(n)
+}
+
+// IncProcessedPackets increments the successfully processed packet counter.
+func (c *Counters) IncProcessedPackets(n uint64) {
+	c.processedPacketsTotal.Add(n)
 }
 
 // IncBytes increments the total byte counter.
@@ -49,6 +59,16 @@ func (c *Counters) IncHandleErrors(n uint64) {
 // IncWriteErrors increments the total write error counter.
 func (c *Counters) IncWriteErrors(n uint64) {
 	c.writeErrorsTotal.Add(n)
+}
+
+// IncReceiveOverflow increments packets dropped by the socket receive queue.
+func (c *Counters) IncReceiveOverflow(n uint64) {
+	c.receiveOverflowTotal.Add(n)
+}
+
+// ObserveProcessingLatency records one server-side processing latency sample.
+func (c *Counters) ObserveProcessingLatency(value time.Duration) {
+	c.processingLatency.Observe(value)
 }
 
 // IncPacketsBySocket increments the packet counter for one socket.
@@ -80,12 +100,15 @@ func (c *Counters) Snapshot() Snapshot {
 	}
 
 	out := Snapshot{
-		PacketsTotal: c.packetsTotal.Load(),
-		BytesTotal:   c.bytesTotal.Load(),
+		PacketsTotal:          c.packetsTotal.Load(),
+		ProcessedPacketsTotal: c.processedPacketsTotal.Load(),
+		BytesTotal:            c.bytesTotal.Load(),
 
-		ReadErrorsTotal:   c.readErrorsTotal.Load(),
-		HandleErrorsTotal: c.handleErrorsTotal.Load(),
-		WriteErrorsTotal:  c.writeErrorsTotal.Load(),
+		ReadErrorsTotal:      c.readErrorsTotal.Load(),
+		HandleErrorsTotal:    c.handleErrorsTotal.Load(),
+		WriteErrorsTotal:     c.writeErrorsTotal.Load(),
+		ReceiveOverflowTotal: c.receiveOverflowTotal.Load(),
+		ProcessingLatency:    c.processingLatency.Snapshot(),
 
 		PacketsBySocket:      map[int]uint64{},
 		BytesBySocket:        map[int]uint64{},

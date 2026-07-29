@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -158,11 +159,15 @@ func runWorker(
 
 		tc := picker.Next()
 
+		instrumentationBytes := 0
+		if opts.TrackServerLatency {
+			instrumentationBytes = 8
+		}
 		packet := BuildGTPv2Message(
 			tc.MessageType,
 			nextTEID(opts.BaseTEID, opts.TEIDCount, packetID),
 			opts.BaseSequence+uint32(packetID),
-			opts.PayloadSize,
+			opts.PayloadSize+instrumentationBytes,
 		)
 
 		if opts.WriteTimeout > 0 {
@@ -172,6 +177,9 @@ func runWorker(
 		}
 
 		start := time.Now()
+		if opts.TrackServerLatency {
+			binary.BigEndian.PutUint64(packet[12:20], uint64(start.UnixNano()))
+		}
 
 		n, err := conn.Write(packet)
 		if err != nil {

@@ -31,6 +31,11 @@ func listenReusePortSocket(opts Options) (*net.UDPConn, int, error) {
 					return
 				}
 
+				if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RXQ_OVFL, 1); err != nil {
+					controlErr = fmt.Errorf("set SO_RXQ_OVFL: %w", err)
+					return
+				}
+
 				if opts.ReadBufferBytes > 0 {
 					if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, opts.ReadBufferBytes); err != nil {
 						controlErr = fmt.Errorf("set SO_RCVBUF: %w", err)

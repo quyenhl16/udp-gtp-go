@@ -74,3 +74,21 @@ func (m MultiObserver) OnWriteError(pkt Packet, err error) {
 		observer.OnWriteError(pkt, err)
 	}
 }
+
+// OnPacketProcessed implements PacketProcessedObserver.
+func (m MultiObserver) OnPacketProcessed(pkt Packet) {
+	for _, observer := range m.observers {
+		if extended, ok := observer.(PacketProcessedObserver); ok {
+			extended.OnPacketProcessed(pkt)
+		}
+	}
+}
+
+// OnReceiveOverflow implements ReceiveOverflowObserver.
+func (m MultiObserver) OnReceiveOverflow(socketIndex int, dropped uint64) {
+	for _, observer := range m.observers {
+		if extended, ok := observer.(ReceiveOverflowObserver); ok {
+			extended.OnReceiveOverflow(socketIndex, dropped)
+		}
+	}
+}

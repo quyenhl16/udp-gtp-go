@@ -287,6 +287,8 @@ func (s *Server) startReaderLocked(index int, conn *net.UDPConn) {
 
 func (s *Server) readLoop(index int, conn *net.UDPConn) {
 	buf := make([]byte, 4096)
+	oob := make([]byte, receiveControlBufferSize())
+	var lastOverflow uint32
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
@@ -297,7 +299,7 @@ func (s *Server) readLoop(index int, conn *net.UDPConn) {
 			return
 		}
 
-		n, addr, err := conn.ReadFromUDP(buf)
+		n, addr, overflow, hasOverflow, err := readUDPWithOverflow(conn, buf, oob)
 		if err != nil {
 			if s.ctx.Err() != nil {
 				return
@@ -311,6 +313,17 @@ func (s *Server) readLoop(index int, conn *net.UDPConn) {
 
 			s.observer.OnReadError(index, err)
 			continue
+		}
+
+		if hasOverflow {
+			// uint32 subtraction intentionally handles counter wraparound.
+			dropped := uint64(overflow - lastOverflow)
+			lastOverflow = overflow
+			if dropped > 0 {
+				if observer, ok := s.observer.(ReceiveOverflowObserver); ok {
+					observer.OnReceiveOverflow(index, dropped)
+				}
+			}
 		}
 
 		pkt := Packet{
@@ -331,6 +344,8 @@ func (s *Server) readLoop(index int, conn *net.UDPConn) {
 
 		if err := s.handler.HandlePacket(s.ctx, pkt, writer); err != nil {
 			s.observer.OnHandleError(pkt, err)
+		} else if observer, ok := s.observer.(PacketProcessedObserver); ok {
+			observer.OnPacketProcessed(pkt)
 		}
 	}
 }
@@ -369,6 +384,11 @@ func listenNormalUDP(cfg appconfig.AppConfig) (*net.UDPConn, error) {
 	conn, err := net.ListenUDP(cfg.Listen.Network, udpAddr)
 	if err != nil {
 		return nil, fmt.Errorf("listen udp %s: %w", addr, err)
+	}
+
+	if err := enableReceiveOverflow(conn); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("enable SO_RXQ_OVFL: %w", err)
 	}
 
 	if cfg.ReusePort.RecvBufferBytes > 0 {

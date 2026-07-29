@@ -248,7 +248,7 @@ func runScenario(
 	cfg.EBPF.SelectionMode = rphook.SelectionModeGTPTEID
 	cfg.EBPF.AllowKernelFallback = true
 
-	metricsObserver := metrics.NewObserver()
+	metricsObserver := metrics.NewEndToEndObserver()
 	affinityObserver := newAffinityObserver()
 
 	srv, err := server.NewWithMode(
@@ -284,17 +284,18 @@ func runScenario(
 	cpuStart, cpuStartErr := benchmark.SampleProcessCPU()
 
 	clientResult, err := benchmark.Run(ctx, benchmark.Options{
-		TargetAddr:   fmt.Sprintf("%s:%d", targetHost, port),
-		Workers:      workers,
-		Duration:     duration,
-		TotalPackets: totalPackets,
-		Mode:         benchmark.ModeFireAndForget,
-		PayloadSize:  payloadSize,
-		WriteTimeout: writeTimeout,
-		SingleFlow:   true,
-		BaseTEID:     baseTEID,
-		TEIDCount:    teidCount,
-		BaseSequence: 1,
+		TargetAddr:         fmt.Sprintf("%s:%d", targetHost, port),
+		Workers:            workers,
+		Duration:           duration,
+		TotalPackets:       totalPackets,
+		Mode:               benchmark.ModeFireAndForget,
+		PayloadSize:        payloadSize,
+		WriteTimeout:       writeTimeout,
+		SingleFlow:         false,
+		BaseTEID:           baseTEID,
+		TEIDCount:          teidCount,
+		BaseSequence:       1,
+		TrackServerLatency: true,
 		Traffic: []benchmark.TrafficClass{
 			{
 				Name:        "GTP",
@@ -307,12 +308,6 @@ func runScenario(
 		return scenarioResult{}, fmt.Errorf("run client benchmark: %w", err)
 	}
 
-	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
-	cpuMetrics := benchmark.ProcessCPUMetrics{}
-	if cpuStartErr == nil && cpuEndErr == nil {
-		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, clientResult.PacketsPerSecond)
-	}
-
 	if drain > 0 {
 		select {
 		case <-ctx.Done():
@@ -320,12 +315,20 @@ func runScenario(
 		case <-time.After(drain):
 		}
 	}
+	serverSnapshot := metricsObserver.Snapshot()
+	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
+	cpuMetrics := benchmark.ProcessCPUMetrics{}
+	if cpuStartErr == nil && cpuEndErr == nil {
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, 0)
+		processedPPS := benchmark.PacketsPerSecond(serverSnapshot.ProcessedPacketsTotal, cpuMetrics.WallDuration)
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, processedPPS)
+	}
 
 	return scenarioResult{
 		Name:     sc.Name,
 		Mode:     sc.Mode,
 		Client:   clientResult,
-		Server:   metricsObserver.Snapshot(),
+		Server:   serverSnapshot,
 		CPU:      cpuMetrics,
 		Affinity: affinityObserver.Snapshot(sampleLimit),
 	}, nil
@@ -336,30 +339,45 @@ func printComparison(results []scenarioResult) {
 	fmt.Println("TEID-aware worker distribution benchmark")
 	fmt.Println("========================================")
 	fmt.Printf(
-		"%-24s %-20s %14s %14s %14s %14s %14s %14s %14s\n",
-		"scenario",
+		"%-24s %14s %14s %14s %15s %11s %12s %12s %12s %16s %12s %14s %14s %20s\n",
 		"mode",
 		"client_sent",
 		"server_recv",
-		"client_pps",
-		"avg_cpu_%",
-		"cpu_per_kpps",
-		"teids_seen",
+		"processed",
+		"processed_kpps",
+		"delivery_%",
+		"p50",
+		"p95",
+		"p99",
+		"drop/overflow",
+		"write_errs",
 		"affinity_viol",
+		"avg_cpu_%",
+		"cpu/processed_kpps",
 	)
 
 	for _, item := range results {
+		duration := item.CPU.WallDuration
+		if duration <= 0 {
+			duration = item.Client.Duration
+		}
+		latency := item.Server.ProcessingLatency
 		fmt.Printf(
-			"%-24s %-20s %14d %14d %14.2f %14s %14s %14d %14d\n",
+			"%-24s %14d %14d %14d %15.2f %11.2f %12s %12s %12s %16s %12d %14d %14s %20s\n",
 			item.Name,
-			item.Mode,
 			item.Client.SentPackets,
 			item.Server.PacketsTotal,
-			item.Client.PacketsPerSecond,
-			benchmark.FormatCPUPercent(item.CPU),
-			benchmark.FormatCPUPerKpps(item.CPU),
-			item.Affinity.TEIDCount,
+			item.Server.ProcessedPacketsTotal,
+			benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration)/1000,
+			benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal),
+			benchmark.FormatLatency(latency.Count, latency.P50),
+			benchmark.FormatLatency(latency.Count, latency.P95),
+			benchmark.FormatLatency(latency.Count, latency.P99),
+			fmt.Sprintf("%d/%d", benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal), item.Server.ReceiveOverflowTotal),
+			item.Client.WriteErrors+item.Server.WriteErrorsTotal,
 			item.Affinity.Violations,
+			benchmark.FormatCPUPercent(item.CPU),
+			benchmark.FormatCPUPerProcessedKpps(item.CPU),
 		)
 	}
 

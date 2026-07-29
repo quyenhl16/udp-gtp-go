@@ -226,3 +226,22 @@ sudo ./bin/bench-teid-distribution \
   -sample-teids 16 \
   -drain 2s
 ```
+
+## Benchmark summary metrics
+
+The scenario, hot-flow, and TEID-distribution commands print one summary row
+per server mode with:
+
+- client packets sent
+- server packets received and successfully processed
+- processed Kpps and packet delivery ratio
+- p50, p95, and p99 latency
+- inferred delivery drops and Linux socket receive overflow (`SO_RXQ_OVFL`)
+- client/server write errors and TEID affinity violations where applicable
+- average process CPU and CPU percentage points per processed Kpps
+
+For fire-and-forget runs, the benchmark reserves eight instrumentation bytes
+after the GTPv2-C header. The server uses the embedded client timestamp to
+measure latency through successful handler completion, including socket queue
+and handler time. CPU normalization uses processed server throughput rather
+than offered client throughput.

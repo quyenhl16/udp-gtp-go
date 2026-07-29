@@ -11,6 +11,7 @@ import (
 
 	"github.com/quyenhl16/udp-gtp-go/benchmark"
 	appconfig "github.com/quyenhl16/udp-gtp-go/config"
+	"github.com/quyenhl16/udp-gtp-go/metrics"
 	"github.com/quyenhl16/udp-gtp-go/server"
 )
 
@@ -26,7 +27,9 @@ type scenario struct {
 type scenarioResult struct {
 	Name   string
 	Mode   server.Mode
-	Result benchmark.Result
+	Client benchmark.Result
+	Server metrics.Snapshot
+	CPU    benchmark.ProcessCPUMetrics
 }
 
 func main() {
@@ -123,11 +126,7 @@ func main() {
 			log.Fatalf("scenario %s failed: %v", sc.Name, err)
 		}
 
-		results = append(results, scenarioResult{
-			Name:   sc.Name,
-			Mode:   sc.Mode,
-			Result: result,
-		})
+		results = append(results, result)
 	}
 
 	printComparison(results)
@@ -151,7 +150,7 @@ func runScenario(
 	s11Weight int,
 	s10Weight int,
 	warmup time.Duration,
-) (benchmark.Result, error) {
+) (scenarioResult, error) {
 	cfg := appconfig.Default()
 
 	cfg.Listen.Network = "udp"
@@ -168,18 +167,19 @@ func runScenario(
 	cfg.EBPF.S10MessageType = s10MsgType
 	cfg.EBPF.AllowKernelFallback = true
 
+	metricsObserver := metrics.NewEndToEndObserver()
 	srv, err := server.NewWithMode(
 		cfg,
 		sc.Mode,
 		server.OKHandler(),
-		server.NopObserver{},
+		metricsObserver,
 	)
 	if err != nil {
-		return benchmark.Result{}, fmt.Errorf("create server: %w", err)
+		return scenarioResult{}, fmt.Errorf("create server: %w", err)
 	}
 
 	if err := srv.Start(ctx); err != nil {
-		return benchmark.Result{}, fmt.Errorf("start server: %w", err)
+		return scenarioResult{}, fmt.Errorf("start server: %w", err)
 	}
 
 	defer func() {
@@ -191,7 +191,7 @@ func runScenario(
 	if warmup > 0 {
 		select {
 		case <-ctx.Done():
-			return benchmark.Result{}, ctx.Err()
+			return scenarioResult{}, ctx.Err()
 		case <-time.After(warmup):
 		}
 	}
@@ -217,16 +217,32 @@ func runScenario(
 				Weight:      s10Weight,
 			},
 		},
-		BaseTEID:     1,
-		BaseSequence: 1,
+		BaseTEID:           1,
+		BaseSequence:       1,
+		TrackServerLatency: true,
 	}
 
-	result, err := benchmark.Run(ctx, opts)
+	cpuStart, cpuStartErr := benchmark.SampleProcessCPU()
+	clientResult, err := benchmark.Run(ctx, opts)
 	if err != nil {
-		return benchmark.Result{}, fmt.Errorf("run benchmark: %w", err)
+		return scenarioResult{}, fmt.Errorf("run benchmark: %w", err)
+	}
+	cpuEnd, cpuEndErr := benchmark.SampleProcessCPU()
+	serverSnapshot := metricsObserver.Snapshot()
+	cpuMetrics := benchmark.ProcessCPUMetrics{}
+	if cpuStartErr == nil && cpuEndErr == nil {
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, 0)
+		processedPPS := benchmark.PacketsPerSecond(serverSnapshot.ProcessedPacketsTotal, cpuMetrics.WallDuration)
+		cpuMetrics = benchmark.ProcessCPUUsage(cpuStart, cpuEnd, processedPPS)
 	}
 
-	return result, nil
+	return scenarioResult{
+		Name:   sc.Name,
+		Mode:   sc.Mode,
+		Client: clientResult,
+		Server: serverSnapshot,
+		CPU:    cpuMetrics,
+	}, nil
 }
 
 func printComparison(results []scenarioResult) {
@@ -234,32 +250,52 @@ func printComparison(results []scenarioResult) {
 	fmt.Println("Benchmark comparison")
 	fmt.Println("====================")
 	fmt.Printf(
-		"%-20s %-18s %12s %12s %12s %12s %12s %12s %12s\n",
-		"scenario",
+		"%-20s %12s %12s %12s %15s %11s %12s %12s %12s %16s %12s %14s %14s %20s\n",
 		"mode",
-		"sent",
-		"received",
-		"pps",
-		"avg",
+		"client_sent",
+		"server_recv",
+		"processed",
+		"processed_kpps",
+		"delivery_%",
+		"p50",
 		"p95",
 		"p99",
-		"timeouts",
+		"drop/overflow",
+		"write_errs",
+		"affinity_viol",
+		"avg_cpu_%",
+		"cpu/processed_kpps",
 	)
 
 	for _, item := range results {
-		r := item.Result
+		duration := item.CPU.WallDuration
+		if duration <= 0 {
+			duration = item.Client.Duration
+		}
+		processedKpps := benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration) / 1000
+		latencyCount := uint64(item.Client.Latency.Count)
+		p50, p95, p99 := item.Client.Latency.P50, item.Client.Latency.P95, item.Client.Latency.P99
+		if latencyCount == 0 {
+			latencyCount = item.Server.ProcessingLatency.Count
+			p50, p95, p99 = item.Server.ProcessingLatency.P50, item.Server.ProcessingLatency.P95, item.Server.ProcessingLatency.P99
+		}
 
 		fmt.Printf(
-			"%-20s %-18s %12d %12d %12.2f %12s %12s %12s %12d\n",
+			"%-20s %12d %12d %12d %15.2f %11.2f %12s %12s %12s %16s %12d %14s %14s %20s\n",
 			item.Name,
-			item.Mode,
-			r.SentPackets,
-			r.ReceivedPackets,
-			r.PacketsPerSecond,
-			r.Latency.Avg,
-			r.Latency.P95,
-			r.Latency.P99,
-			r.Timeouts,
+			item.Client.SentPackets,
+			item.Server.PacketsTotal,
+			item.Server.ProcessedPacketsTotal,
+			processedKpps,
+			benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal),
+			benchmark.FormatLatency(latencyCount, p50),
+			benchmark.FormatLatency(latencyCount, p95),
+			benchmark.FormatLatency(latencyCount, p99),
+			fmt.Sprintf("%d/%d", benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal), item.Server.ReceiveOverflowTotal),
+			item.Client.WriteErrors+item.Server.WriteErrorsTotal,
+			"n/a",
+			benchmark.FormatCPUPercent(item.CPU),
+			benchmark.FormatCPUPerProcessedKpps(item.CPU),
 		)
 	}
 

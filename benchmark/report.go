@@ -1,6 +1,43 @@
 package benchmark
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+// PacketsPerSecond returns a packet rate over the supplied measurement window.
+func PacketsPerSecond(packets uint64, duration time.Duration) float64 {
+	if duration <= 0 {
+		return 0
+	}
+	return float64(packets) / duration.Seconds()
+}
+
+// DeliveryRatio returns the percentage of sent packets observed by the server.
+func DeliveryRatio(sent, received uint64) float64 {
+	if sent == 0 {
+		return 0
+	}
+	return float64(received) / float64(sent) * 100
+}
+
+// InferredDrops returns packets sent by the client but not observed by the
+// server. It saturates at zero because asynchronous snapshots can briefly make
+// received exceed sent.
+func InferredDrops(sent, received uint64) uint64 {
+	if received >= sent {
+		return 0
+	}
+	return sent - received
+}
+
+// FormatLatency formats a percentile, using n/a when there are no samples.
+func FormatLatency(count uint64, value time.Duration) string {
+	if count == 0 {
+		return "n/a"
+	}
+	return value.String()
+}
 
 // FormatResult formats a benchmark result into a readable multi-line report.
 func FormatResult(r Result) string {
