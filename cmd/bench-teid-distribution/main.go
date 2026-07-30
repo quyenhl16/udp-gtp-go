@@ -38,6 +38,12 @@ type scenarioResult struct {
 	Affinity affinitySnapshot
 }
 
+type scenarioResults struct {
+	Name string
+	Mode server.Mode
+	Runs []scenarioResult
+}
+
 type affinityObserver struct {
 	mu            sync.Mutex
 	socketByTEID  map[uint32]int
@@ -122,9 +128,10 @@ func main() {
 		basePort   = flag.Int("base-port", 21400, "Base UDP port for scenario servers")
 
 		workers      = flag.Int("workers", 8, "Number of client workers sharing one UDP socket")
+		runs         = flag.Int("runs", 5, "Number of runs per server mode")
 		socketCount  = flag.Int("sockets", 8, "Number of reuseport sockets")
-		duration     = flag.Duration("duration", 10*time.Second, "Benchmark duration per scenario")
-		totalPackets = flag.Uint64("total", 0, "Total packets per scenario; 0 means duration-based")
+		duration     = flag.Duration("duration", 10*time.Second, "Benchmark duration per run")
+		totalPackets = flag.Uint64("total", 0, "Total packets per run; 0 means duration-based")
 
 		msgType      = flag.Uint("msg-type", 32, "GTPv2-C message type for all generated packets")
 		baseTEID     = flag.Uint("base-teid", 1, "First TEID in the generated TEID range")
@@ -139,6 +146,9 @@ func main() {
 
 	flag.Parse()
 
+	if *runs <= 0 {
+		log.Fatalf("runs must be > 0: got %d", *runs)
+	}
 	if *socketCount <= 0 {
 		log.Fatalf("sockets must be > 0: got %d", *socketCount)
 	}
@@ -176,38 +186,42 @@ func main() {
 		},
 	}
 
-	results := make([]scenarioResult, 0, len(scenarios))
+	results := make([]scenarioResults, 0, len(scenarios))
 	for _, sc := range scenarios {
 		if ctx.Err() != nil {
 			break
 		}
 
 		port := *basePort + sc.PortOffset
-		log.Printf("scenario=%s mode=%s port=%d", sc.Name, sc.Mode, port)
+		group := scenarioResults{Name: sc.Name, Mode: sc.Mode, Runs: make([]scenarioResult, 0, *runs)}
+		for run := 1; run <= *runs; run++ {
+			log.Printf("scenario=%s mode=%s run=%d/%d port=%d", sc.Name, sc.Mode, run, *runs, port)
 
-		result, err := runScenario(
-			ctx,
-			sc,
-			*listenHost,
-			*targetHost,
-			port,
-			*workers,
-			*duration,
-			*totalPackets,
-			uint8(*msgType),
-			uint32(*baseTEID),
-			uint32(*teidCount),
-			*payloadSize,
-			*writeTimeout,
-			*warmup,
-			*drain,
-			*sampleLimit,
-		)
-		if err != nil {
-			log.Fatalf("scenario %s failed: %v", sc.Name, err)
+			result, err := runScenario(
+				ctx,
+				sc,
+				*listenHost,
+				*targetHost,
+				port,
+				*workers,
+				*duration,
+				*totalPackets,
+				uint8(*msgType),
+				uint32(*baseTEID),
+				uint32(*teidCount),
+				*payloadSize,
+				*writeTimeout,
+				*warmup,
+				*drain,
+				*sampleLimit,
+			)
+			if err != nil {
+				log.Fatalf("scenario %s run %d/%d failed: %v", sc.Name, run, *runs, err)
+			}
+			group.Runs = append(group.Runs, result)
 		}
 
-		results = append(results, result)
+		results = append(results, group)
 	}
 
 	printComparison(results)
@@ -334,70 +348,61 @@ func runScenario(
 	}, nil
 }
 
-func printComparison(results []scenarioResult) {
+func printComparison(results []scenarioResults) {
 	fmt.Println()
 	fmt.Println("TEID-aware worker distribution benchmark")
 	fmt.Println("========================================")
-	fmt.Printf(
-		"%-24s %14s %14s %14s %15s %11s %12s %12s %12s %16s %12s %14s %14s %20s\n",
-		"mode",
-		"client_sent",
-		"server_recv",
-		"processed",
-		"processed_kpps",
-		"delivery_%",
-		"p50",
-		"p95",
-		"p99",
-		"drop/overflow",
-		"write_errs",
-		"affinity_viol",
-		"avg_cpu_%",
-		"cpu/processed_kpps",
-	)
+	fmt.Println("Each value is: mean [95% confidence interval]")
 
-	for _, item := range results {
-		duration := item.CPU.WallDuration
-		if duration <= 0 {
-			duration = item.Client.Duration
-		}
-		latency := item.Server.ProcessingLatency
-		fmt.Printf(
-			"%-24s %14d %14d %14d %15.2f %11.2f %12s %12s %12s %16s %12d %14d %14s %20s\n",
-			item.Name,
-			item.Client.SentPackets,
-			item.Server.PacketsTotal,
-			item.Server.ProcessedPacketsTotal,
-			benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration)/1000,
-			benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal),
-			benchmark.FormatLatency(latency.Count, latency.P50),
-			benchmark.FormatLatency(latency.Count, latency.P95),
-			benchmark.FormatLatency(latency.Count, latency.P99),
-			fmt.Sprintf("%d/%d", benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal), item.Server.ReceiveOverflowTotal),
-			item.Client.WriteErrors+item.Server.WriteErrorsTotal,
-			item.Affinity.Violations,
-			benchmark.FormatCPUPercent(item.CPU),
-			benchmark.FormatCPUPerProcessedKpps(item.CPU),
-		)
+	for _, group := range results {
+		fmt.Printf("\n[%s] mode=%s runs=%d\n", group.Name, group.Mode, len(group.Runs))
+		printEstimate("client_sent", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Client.SentPackets) }), 2)
+		printEstimate("server_recv", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.PacketsTotal) }), 2)
+		printEstimate("processed", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.ProcessedPacketsTotal) }), 2)
+		printEstimate("processed_kpps", collect(group.Runs, processedKpps), 2)
+		printEstimate("delivery_%", collect(group.Runs, func(item scenarioResult) float64 {
+			return benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal)
+		}), 2)
+		printDurationEstimate("p50", collectServerLatency(group.Runs, 50))
+		printDurationEstimate("p95", collectServerLatency(group.Runs, 95))
+		printDurationEstimate("p99", collectServerLatency(group.Runs, 99))
+		printEstimate("inferred_drops", collect(group.Runs, func(item scenarioResult) float64 {
+			return float64(benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal))
+		}), 2)
+		printEstimate("rx_overflow", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.ReceiveOverflowTotal) }), 2)
+		printEstimate("write_errors", collect(group.Runs, func(item scenarioResult) float64 {
+			return float64(item.Client.WriteErrors + item.Server.WriteErrorsTotal)
+		}), 2)
+		printEstimate("affinity_violations", collect(group.Runs, func(item scenarioResult) float64 {
+			return float64(item.Affinity.Violations)
+		}), 2)
+		printEstimate("avg_cpu_%", collectAvailableCPU(group.Runs, func(cpu benchmark.ProcessCPUMetrics) float64 {
+			return cpu.AverageUtilizationPercent
+		}), 2)
+		printEstimate("cpu/processed_kpps", collectAvailableCPU(group.Runs, func(cpu benchmark.ProcessCPUMetrics) float64 {
+			return cpu.CPUPerProcessedKpps
+		}), 4)
 	}
 
 	fmt.Println()
 	fmt.Println("Per-socket distribution")
 	fmt.Println("=======================")
-	for _, item := range results {
-		fmt.Printf("\n[%s]\n", item.Name)
-		keys := metrics.SortedSocketKeys(item.Server)
+	for _, group := range results {
+		fmt.Printf("\n[%s]\n", group.Name)
+		keys := socketKeys(group.Runs)
 		if len(keys) == 0 {
 			fmt.Println("no socket metrics")
 			continue
 		}
 
 		for _, socketIndex := range keys {
+			packets := collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.PacketsBySocket[socketIndex]) })
+			bytes := collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.BytesBySocket[socketIndex]) })
 			fmt.Printf(
-				"socket[%d]: packets=%d bytes=%d\n",
+				"socket[%d]: packets=%s bytes=%s\n",
 				socketIndex,
-				item.Server.PacketsBySocket[socketIndex],
-				item.Server.BytesBySocket[socketIndex],
+				benchmark.FormatMeanCI95(packets, 2),
+				benchmark.FormatMeanCI95(bytes, 2),
 			)
 		}
 	}
@@ -405,22 +410,131 @@ func printComparison(results []scenarioResult) {
 	fmt.Println()
 	fmt.Println("TEID affinity samples")
 	fmt.Println("=====================")
-	for _, item := range results {
-		fmt.Printf("\n[%s]\n", item.Name)
-		if len(item.Affinity.Samples) == 0 {
+	for _, group := range results {
+		fmt.Printf("\n[%s]\n", group.Name)
+		teids := sampleTEIDs(group.Runs)
+		if len(teids) == 0 {
 			fmt.Println("no TEID samples")
 			continue
 		}
 
-		for _, sample := range item.Affinity.Samples {
+		for _, teid := range teids {
 			fmt.Printf(
-				"teid[%d]: socket=%d packets=%d\n",
-				sample.TEID,
-				sample.SocketIndex,
-				sample.Packets,
+				"teid[%d]: sockets_by_run=%v packets=%s\n",
+				teid,
+				sampleSockets(group.Runs, teid),
+				benchmark.FormatMeanCI95(samplePackets(group.Runs, teid), 2),
 			)
 		}
 	}
+}
+
+func processedKpps(item scenarioResult) float64 {
+	duration := item.CPU.WallDuration
+	if duration <= 0 {
+		duration = item.Client.Duration
+	}
+	return benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration) / 1000
+}
+
+func collect(items []scenarioResult, value func(scenarioResult) float64) []float64 {
+	values := make([]float64, 0, len(items))
+	for _, item := range items {
+		values = append(values, value(item))
+	}
+	return values
+}
+
+func collectAvailableCPU(items []scenarioResult, value func(benchmark.ProcessCPUMetrics) float64) []float64 {
+	values := make([]float64, 0, len(items))
+	for _, item := range items {
+		if item.CPU.Available {
+			values = append(values, value(item.CPU))
+		}
+	}
+	return values
+}
+
+func collectServerLatency(items []scenarioResult, percentile int) []time.Duration {
+	values := make([]time.Duration, 0, len(items))
+	for _, item := range items {
+		latency := item.Server.ProcessingLatency
+		if latency.Count == 0 {
+			continue
+		}
+		switch percentile {
+		case 50:
+			values = append(values, latency.P50)
+		case 95:
+			values = append(values, latency.P95)
+		case 99:
+			values = append(values, latency.P99)
+		}
+	}
+	return values
+}
+
+func socketKeys(items []scenarioResult) []int {
+	merged := metrics.Snapshot{PacketsBySocket: map[int]uint64{}}
+	for _, item := range items {
+		for key := range item.Server.PacketsBySocket {
+			merged.PacketsBySocket[key] = 1
+		}
+	}
+	return metrics.SortedSocketKeys(merged)
+}
+
+func sampleTEIDs(items []scenarioResult) []uint32 {
+	seen := map[uint32]struct{}{}
+	for _, item := range items {
+		for _, sample := range item.Affinity.Samples {
+			seen[sample.TEID] = struct{}{}
+		}
+	}
+	teids := make([]uint32, 0, len(seen))
+	for teid := range seen {
+		teids = append(teids, teid)
+	}
+	sort.Slice(teids, func(i, j int) bool { return teids[i] < teids[j] })
+	return teids
+}
+
+func sampleSockets(items []scenarioResult, teid uint32) []int {
+	sockets := make([]int, 0, len(items))
+	for _, item := range items {
+		socket := -1
+		for _, sample := range item.Affinity.Samples {
+			if sample.TEID == teid {
+				socket = sample.SocketIndex
+				break
+			}
+		}
+		sockets = append(sockets, socket)
+	}
+	return sockets
+}
+
+func samplePackets(items []scenarioResult, teid uint32) []float64 {
+	packets := make([]float64, 0, len(items))
+	for _, item := range items {
+		var count uint64
+		for _, sample := range item.Affinity.Samples {
+			if sample.TEID == teid {
+				count = sample.Packets
+				break
+			}
+		}
+		packets = append(packets, float64(count))
+	}
+	return packets
+}
+
+func printEstimate(name string, values []float64, precision int) {
+	fmt.Printf("%-24s %s\n", name, benchmark.FormatMeanCI95(values, precision))
+}
+
+func printDurationEstimate(name string, values []time.Duration) {
+	fmt.Printf("%-24s %s\n", name, benchmark.FormatDurationMeanCI95(values))
 }
 
 func alternateMessageType(messageType uint8) uint8 {

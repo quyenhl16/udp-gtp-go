@@ -193,6 +193,7 @@ go build -o bin/bench-teid-distribution ./cmd/bench-teid-distribution
 # Run the three benchmark scenarios
 sudo ./bin/bench-scenarios \
   -base-port 21230 \
+  -runs 5 \
   -workers 8 \
   -duration 10s \
   -bench-mode request_response \
@@ -204,6 +205,7 @@ sudo ./bin/bench-scenarios \
 # Run the single hot-flow benchmark
 sudo ./bin/bench-hotflow \
   -base-port 21300 \
+  -runs 5 \
   -workers 8 \
   -duration 10s \
   -s11-msg-type 32 \
@@ -218,6 +220,7 @@ sudo ./bin/bench-hotflow \
 # Run the TEID distribution benchmark
 sudo ./bin/bench-teid-distribution \
   -base-port 21400 \
+  -runs 5 \
   -workers 8 \
   -sockets 8 \
   -duration 10s \
@@ -229,8 +232,9 @@ sudo ./bin/bench-teid-distribution \
 
 ## Benchmark summary metrics
 
-The scenario, hot-flow, and TEID-distribution commands print one summary row
-per server mode with:
+The scenario, hot-flow, and TEID-distribution commands run each server mode five
+times by default. Use `-runs` to override that count. Reports show the sample
+mean and two-sided 95% confidence interval (Student's t) for:
 
 - client packets sent
 - server packets received and successfully processed

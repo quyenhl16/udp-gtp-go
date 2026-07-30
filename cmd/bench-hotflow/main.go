@@ -35,6 +35,12 @@ type scenarioResult struct {
 	Duration time.Duration
 }
 
+type scenarioResults struct {
+	Name string
+	Mode server.Mode
+	Runs []scenarioResult
+}
+
 type heavyHandler struct {
 	heavyMessageType uint8
 	heavyDelay       time.Duration
@@ -68,8 +74,9 @@ func main() {
 		basePort   = flag.Int("base-port", 21300, "Base UDP port for scenario servers")
 
 		workers      = flag.Int("workers", 8, "Number of client workers sharing one UDP socket")
-		duration     = flag.Duration("duration", 10*time.Second, "Benchmark duration per scenario")
-		totalPackets = flag.Uint64("total", 0, "Total packets per scenario; 0 means duration-based")
+		runs         = flag.Int("runs", 5, "Number of runs per server mode")
+		duration     = flag.Duration("duration", 10*time.Second, "Benchmark duration per run")
+		totalPackets = flag.Uint64("total", 0, "Total packets per run; 0 means duration-based")
 
 		payloadSize  = flag.Int("payload-size", 0, "Payload size after the GTPv2-C header")
 		writeTimeout = flag.Duration("write-timeout", 2*time.Second, "UDP write timeout")
@@ -89,6 +96,9 @@ func main() {
 	)
 
 	flag.Parse()
+	if *runs <= 0 {
+		log.Fatalf("runs must be > 0: got %d", *runs)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -125,7 +135,7 @@ func main() {
 		},
 	}
 
-	results := make([]scenarioResult, 0, len(scenarios))
+	results := make([]scenarioResults, 0, len(scenarios))
 
 	for _, sc := range scenarios {
 		if ctx.Err() != nil {
@@ -134,34 +144,38 @@ func main() {
 
 		port := *basePort + sc.PortOffset
 
-		log.Printf("scenario=%s mode=%s port=%d", sc.Name, sc.Mode, port)
+		group := scenarioResults{Name: sc.Name, Mode: sc.Mode, Runs: make([]scenarioResult, 0, *runs)}
+		for run := 1; run <= *runs; run++ {
+			log.Printf("scenario=%s mode=%s run=%d/%d port=%d", sc.Name, sc.Mode, run, *runs, port)
 
-		result, err := runScenario(
-			ctx,
-			sc,
-			*listenHost,
-			*targetHost,
-			port,
-			*workers,
-			*duration,
-			*totalPackets,
-			*payloadSize,
-			*writeTimeout,
-			uint8(*s11MsgType),
-			uint8(*s10MsgType),
-			*s11Weight,
-			*s10Weight,
-			*s11PoolWeight,
-			*s10PoolWeight,
-			*heavyDelay,
-			*warmup,
-			*drain,
-		)
-		if err != nil {
-			log.Fatalf("scenario %s failed: %v", sc.Name, err)
+			result, err := runScenario(
+				ctx,
+				sc,
+				*listenHost,
+				*targetHost,
+				port,
+				*workers,
+				*duration,
+				*totalPackets,
+				*payloadSize,
+				*writeTimeout,
+				uint8(*s11MsgType),
+				uint8(*s10MsgType),
+				*s11Weight,
+				*s10Weight,
+				*s11PoolWeight,
+				*s10PoolWeight,
+				*heavyDelay,
+				*warmup,
+				*drain,
+			)
+			if err != nil {
+				log.Fatalf("scenario %s run %d/%d failed: %v", sc.Name, run, *runs, err)
+			}
+			group.Runs = append(group.Runs, result)
 		}
 
-		results = append(results, result)
+		results = append(results, group)
 	}
 
 	printComparison(results)
@@ -299,71 +313,58 @@ func runScenario(
 	}, nil
 }
 
-func printComparison(results []scenarioResult) {
+func printComparison(results []scenarioResults) {
 	fmt.Println()
 	fmt.Println("Single hot flow + heavy handler benchmark")
 	fmt.Println("=========================================")
-	fmt.Printf(
-		"%-26s %14s %14s %14s %15s %11s %12s %12s %12s %16s %12s %14s %14s %20s\n",
-		"mode",
-		"client_sent",
-		"server_recv",
-		"processed",
-		"processed_kpps",
-		"delivery_%",
-		"p50",
-		"p95",
-		"p99",
-		"drop/overflow",
-		"write_errs",
-		"affinity_viol",
-		"avg_cpu_%",
-		"cpu/processed_kpps",
-	)
+	fmt.Println("Each value is: mean [95% confidence interval]")
 
-	for _, item := range results {
-		duration := item.CPU.WallDuration
-		if duration <= 0 {
-			duration = item.Client.Duration
-		}
-		latency := item.Server.ProcessingLatency
-		fmt.Printf(
-			"%-26s %14d %14d %14d %15.2f %11.2f %12s %12s %12s %16s %12d %14s %14s %20s\n",
-			item.Name,
-			item.Client.SentPackets,
-			item.Server.PacketsTotal,
-			item.Server.ProcessedPacketsTotal,
-			benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration)/1000,
-			benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal),
-			benchmark.FormatLatency(latency.Count, latency.P50),
-			benchmark.FormatLatency(latency.Count, latency.P95),
-			benchmark.FormatLatency(latency.Count, latency.P99),
-			fmt.Sprintf("%d/%d", benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal), item.Server.ReceiveOverflowTotal),
-			item.Client.WriteErrors+item.Server.WriteErrorsTotal,
-			"n/a",
-			benchmark.FormatCPUPercent(item.CPU),
-			benchmark.FormatCPUPerProcessedKpps(item.CPU),
-		)
+	for _, group := range results {
+		fmt.Printf("\n[%s] mode=%s runs=%d\n", group.Name, group.Mode, len(group.Runs))
+		printEstimate("client_sent", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Client.SentPackets) }), 2)
+		printEstimate("server_recv", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.PacketsTotal) }), 2)
+		printEstimate("processed", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.ProcessedPacketsTotal) }), 2)
+		printEstimate("processed_kpps", collect(group.Runs, processedKpps), 2)
+		printEstimate("delivery_%", collect(group.Runs, func(item scenarioResult) float64 {
+			return benchmark.DeliveryRatio(item.Client.SentPackets, item.Server.PacketsTotal)
+		}), 2)
+		printDurationEstimate("p50", collectServerLatency(group.Runs, 50))
+		printDurationEstimate("p95", collectServerLatency(group.Runs, 95))
+		printDurationEstimate("p99", collectServerLatency(group.Runs, 99))
+		printEstimate("inferred_drops", collect(group.Runs, func(item scenarioResult) float64 {
+			return float64(benchmark.InferredDrops(item.Client.SentPackets, item.Server.PacketsTotal))
+		}), 2)
+		printEstimate("rx_overflow", collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.ReceiveOverflowTotal) }), 2)
+		printEstimate("write_errors", collect(group.Runs, func(item scenarioResult) float64 {
+			return float64(item.Client.WriteErrors + item.Server.WriteErrorsTotal)
+		}), 2)
+		fmt.Printf("%-24s %s\n", "affinity_violations", "n/a")
+		printEstimate("avg_cpu_%", collectAvailableCPU(group.Runs, func(cpu benchmark.ProcessCPUMetrics) float64 {
+			return cpu.AverageUtilizationPercent
+		}), 2)
+		printEstimate("cpu/processed_kpps", collectAvailableCPU(group.Runs, func(cpu benchmark.ProcessCPUMetrics) float64 {
+			return cpu.CPUPerProcessedKpps
+		}), 4)
 	}
 
 	fmt.Println()
 	fmt.Println("Per-socket distribution")
 	fmt.Println("=======================")
 
-	for _, item := range results {
-		fmt.Printf("\n[%s]\n", item.Name)
+	for _, group := range results {
+		fmt.Printf("\n[%s]\n", group.Name)
 
-		keys := metrics.SortedSocketKeys(item.Server)
+		keys := socketKeys(group.Runs)
 		if len(keys) == 0 {
 			fmt.Println("no socket metrics")
 			continue
 		}
 
 		for _, socketIndex := range keys {
-			packets := item.Server.PacketsBySocket[socketIndex]
-			bytes := item.Server.BytesBySocket[socketIndex]
+			packets := collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.PacketsBySocket[socketIndex]) })
+			bytes := collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.BytesBySocket[socketIndex]) })
 
-			fmt.Printf("socket[%d]: packets=%d bytes=%d\n", socketIndex, packets, bytes)
+			fmt.Printf("socket[%d]: packets=%s bytes=%s\n", socketIndex, benchmark.FormatMeanCI95(packets, 2), benchmark.FormatMeanCI95(bytes, 2))
 		}
 	}
 
@@ -371,17 +372,91 @@ func printComparison(results []scenarioResult) {
 	fmt.Println("Per-message-type distribution")
 	fmt.Println("=============================")
 
-	for _, item := range results {
-		fmt.Printf("\n[%s]\n", item.Name)
+	for _, group := range results {
+		fmt.Printf("\n[%s]\n", group.Name)
 
-		keys := metrics.SortedMessageTypeKeys(item.Server)
+		keys := messageTypeKeys(group.Runs)
 		if len(keys) == 0 {
 			fmt.Println("no message type metrics")
 			continue
 		}
 
 		for _, msgType := range keys {
-			fmt.Printf("messageType[%d]: packets=%d\n", msgType, item.Server.PacketsByMessageType[msgType])
+			packets := collect(group.Runs, func(item scenarioResult) float64 { return float64(item.Server.PacketsByMessageType[msgType]) })
+			fmt.Printf("messageType[%d]: packets=%s\n", msgType, benchmark.FormatMeanCI95(packets, 2))
 		}
 	}
+}
+
+func processedKpps(item scenarioResult) float64 {
+	duration := item.CPU.WallDuration
+	if duration <= 0 {
+		duration = item.Client.Duration
+	}
+	return benchmark.PacketsPerSecond(item.Server.ProcessedPacketsTotal, duration) / 1000
+}
+
+func collect(items []scenarioResult, value func(scenarioResult) float64) []float64 {
+	values := make([]float64, 0, len(items))
+	for _, item := range items {
+		values = append(values, value(item))
+	}
+	return values
+}
+
+func collectAvailableCPU(items []scenarioResult, value func(benchmark.ProcessCPUMetrics) float64) []float64 {
+	values := make([]float64, 0, len(items))
+	for _, item := range items {
+		if item.CPU.Available {
+			values = append(values, value(item.CPU))
+		}
+	}
+	return values
+}
+
+func collectServerLatency(items []scenarioResult, percentile int) []time.Duration {
+	values := make([]time.Duration, 0, len(items))
+	for _, item := range items {
+		latency := item.Server.ProcessingLatency
+		if latency.Count == 0 {
+			continue
+		}
+		switch percentile {
+		case 50:
+			values = append(values, latency.P50)
+		case 95:
+			values = append(values, latency.P95)
+		case 99:
+			values = append(values, latency.P99)
+		}
+	}
+	return values
+}
+
+func socketKeys(items []scenarioResult) []int {
+	merged := metrics.Snapshot{PacketsBySocket: map[int]uint64{}}
+	for _, item := range items {
+		for key := range item.Server.PacketsBySocket {
+			merged.PacketsBySocket[key] = 1
+		}
+	}
+	return metrics.SortedSocketKeys(merged)
+}
+
+func messageTypeKeys(items []scenarioResult) []uint8 {
+	merged := metrics.Snapshot{PacketsByMessageType: map[uint8]uint64{}}
+	for _, item := range items {
+		for key := range item.Server.PacketsByMessageType {
+			merged.PacketsByMessageType[key] = 1
+		}
+	}
+	return metrics.SortedMessageTypeKeys(merged)
+}
+
+func printEstimate(name string, values []float64, precision int) {
+	fmt.Printf("%-24s %s\n", name, benchmark.FormatMeanCI95(values, precision))
+}
+
+func printDurationEstimate(name string, values []time.Duration) {
+	fmt.Printf("%-24s %s\n", name, benchmark.FormatDurationMeanCI95(values))
 }
